@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { fetchToday, fetchRecent, fetchCallbacks, fetchHotLeads, fetchLoanSignals, fetchChurnSignals } from './lib/airtable';
+import { fetchToday, fetchRecent, fetchCallbacks, fetchHotLeads, fetchLoanSignals, fetchChurnSignals, fetchCallbacksRequested } from './lib/airtable';
 import Overview from './components/Overview';
 import VikasQueue from './components/VikasQueue';
 import SamirQueue from './components/SamirQueue';
@@ -8,17 +8,18 @@ const TABS = ['Overview', 'Vikas Queue', 'Samir Queue'];
 
 export default function App() {
   const [tab, setTab] = useState(0);
-  const [data, setData] = useState({ today: [], recent: [], callbacks: [], hotLeads: [], loans: [], churn: [] });
+  const [data, setData] = useState({ today: [], recent: [], callbacks: [], hotLeads: [], loans: [], churn: [], callbacksRequested: [] });
   const [loading, setLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [today, recent, callbacks, hotLeads, loans, churn] = await Promise.all([
+      const [today, recent, callbacks, hotLeads, loans, churn, callbacksRequested] = await Promise.all([
         fetchToday(), fetchRecent(50), fetchCallbacks(),
         fetchHotLeads(), fetchLoanSignals(), fetchChurnSignals(),
+        fetchCallbacksRequested(),
       ]);
-      setData({ today, recent, callbacks, hotLeads, loans, churn });
+      setData({ today, recent, callbacks, hotLeads, loans, churn, callbacksRequested });
       setLastRefresh(new Date());
     } catch (e) {
       console.error('Fetch error:', e);
@@ -77,8 +78,8 @@ export default function App() {
         ) : (
           <>
             {tab === 0 && <Overview today={data.today} recent={data.recent} />}
-            {tab === 1 && <VikasQueue today={data.today} callbacks={data.callbacks} onRemove={removeRecord} onRefresh={refresh} />}
-            {tab === 2 && <SamirQueue hotLeads={data.hotLeads} loans={data.loans} churn={data.churn} onRemove={removeRecord} onRefresh={refresh} />}
+            {tab === 1 && <VikasQueue today={data.today} callbacks={data.callbacks} callbacksRequested={data.callbacksRequested} onRemove={removeRecord} onRefresh={refresh} />}
+            {tab === 2 && <SamirQueue hotLeads={data.hotLeads} loans={data.loans} churn={data.churn} callbacksRequested={data.callbacksRequested} onRemove={removeRecord} onRefresh={refresh} />}
           </>
         )}
       </main>

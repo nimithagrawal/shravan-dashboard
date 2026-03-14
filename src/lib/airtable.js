@@ -41,6 +41,10 @@ export async function fetchChurnSignals() {
   return fetchAll('{Churn Signal}=1');
 }
 
+export async function fetchCallbacksRequested() {
+  return fetchAll('{Callback Requested}=1');
+}
+
 export async function fetchRecent(limit = 50) {
   const params = new URLSearchParams();
   params.set('pageSize', String(limit));

@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { patchRecord } from '../lib/airtable';
 import { qaScore, qaRating, fmtDuration, ratingColor, truncate } from '../lib/helpers';
+import PhoneNumber from './PhoneNumber';
 
 function Chip({ text, className }) {
   return <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${className}`}>{text}</span>;
@@ -17,7 +18,13 @@ function ActionButton({ label, onClick }) {
   );
 }
 
-export default function VikasQueue({ today, callbacks, onRemove, onRefresh }) {
+export default function VikasQueue({ today, callbacks, callbacksRequested = [], onRemove, onRefresh }) {
+  // Callbacks Requested (from Gemini sentiment)
+  const sortedCallbacksReq = useMemo(() =>
+    [...callbacksRequested].sort((a, b) => (b['Call Date'] || '').localeCompare(a['Call Date'] || '')),
+    [callbacksRequested]
+  );
+
   // SECTION A: Callback Queue
   const sortedCallbacks = useMemo(() =>
     [...callbacks].sort((a, b) => {
@@ -33,6 +40,15 @@ export default function VikasQueue({ today, callbacks, onRemove, onRefresh }) {
     try {
       await patchRecord(r.id, { 'Needs Callback': false });
       onRemove('callbacks', r.id);
+    } catch (e) {
+      alert('Failed: ' + e.message);
+    }
+  };
+
+  const handleCallbackReqDone = async (r) => {
+    try {
+      await patchRecord(r.id, { 'Callback Requested': false });
+      onRemove('callbacksRequested', r.id);
     } catch (e) {
       alert('Failed: ' + e.message);
     }
@@ -77,6 +93,54 @@ export default function VikasQueue({ today, callbacks, onRemove, onRefresh }) {
         <p className="text-sm text-gray-500">Callbacks + QA Review</p>
       </div>
 
+      {/* Callbacks Requested (Gemini-detected) */}
+      <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        <div className="flex items-center gap-2 p-4 pb-2">
+          <h3 className="text-sm font-semibold text-gray-700">📞 Callbacks Requested (AI-detected)</h3>
+          {sortedCallbacksReq.length > 0 && (
+            <span className="bg-amber text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{sortedCallbacksReq.length}</span>
+          )}
+        </div>
+        {sortedCallbacksReq.length === 0 ? (
+          <p className="px-4 py-8 text-center text-gray-400">No AI-detected callback requests</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
+                  <th className="px-4 py-2">Subscriber</th>
+                  <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Agent</th>
+                  <th className="px-4 py-2">Time</th>
+                  <th className="px-4 py-2">Outcome</th>
+                  <th className="px-4 py-2">Duration</th>
+                  <th className="px-4 py-2 max-w-[200px]">Summary</th>
+                  <th className="px-4 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedCallbacksReq.map(r => (
+                  <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
+                    <td className="px-4 py-2">{r['Subscriber Name'] || r['Mobile Number'] || '--'}</td>
+                    <td className="px-4 py-2">
+                      {r['Mobile Number'] ? <a href={`tel:${r['Mobile Number']}`} className="text-info underline">{r['Mobile Number']}</a> : '--'}
+                    </td>
+                    <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
+                    <td className="px-4 py-2 whitespace-nowrap">{r['Call Time'] || '--'}</td>
+                    <td className="px-4 py-2">{r['Call Outcome'] || '--'}</td>
+                    <td className="px-4 py-2">{fmtDuration(r['Duration Seconds'])}</td>
+                    <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                    <td className="px-4 py-2">
+                      <ActionButton label="✓ Called Back" onClick={() => handleCallbackReqDone(r)} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
       {/* SECTION A: Callbacks */}
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="flex items-center gap-2 p-4 pb-2">
@@ -118,9 +182,7 @@ export default function VikasQueue({ today, callbacks, onRemove, onRefresh }) {
                     </td>
                     <td className="px-4 py-2">{r['Subscriber Name'] || r['Mobile Number'] || '--'}</td>
                     <td className="px-4 py-2">
-                      {r['Mobile Number'] ? (
-                        <a href={`tel:${r['Mobile Number']}`} className="text-info underline">{r['Mobile Number']}</a>
-                      ) : '--'}
+                      <PhoneNumber number={r['Mobile Number']} />
                     </td>
                     <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                     <td className="px-4 py-2">{r['Attempt Number'] || '--'}</td>

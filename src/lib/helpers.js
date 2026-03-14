@@ -46,3 +46,31 @@ export function truncate(s, n = 80) {
   if (!s) return '';
   return s.length > n ? s.slice(0, n) + '...' : s;
 }
+
+export function sentimentScoreColor(score) {
+  if (score == null) return 'text-gray-400';
+  if (score >= 4) return 'text-pass';
+  if (score >= 3) return 'text-amber';
+  return 'text-fail';
+}
+
+export function sentimentDotColor(score) {
+  if (score == null) return 'bg-gray-300';
+  if (score >= 4) return 'bg-pass';
+  if (score >= 3) return 'bg-amber';
+  return 'bg-fail';
+}
+
+export function intentChipColor(intent) {
+  if (intent === 'Interested') return 'bg-green-100 text-pass';
+  if (intent === 'Considering') return 'bg-yellow-100 text-amber';
+  if (intent === 'Rejected') return 'bg-red-100 text-fail';
+  return 'bg-gray-100 text-gray-600';
+}
+
+export function maskPhone(num) {
+  if (!num) return '--';
+  const s = String(num).replace(/\D/g, '');
+  if (s.length <= 5) return s;
+  return s.slice(0, 5) + 'X'.repeat(s.length - 5);
+}

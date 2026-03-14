@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { patchRecord } from '../lib/airtable';
-import { truncate } from '../lib/helpers';
+import { truncate, sentimentScoreColor } from '../lib/helpers';
+import PhoneNumber from './PhoneNumber';
 
 function Chip({ text, className }) {
   return <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${className}`}>{text}</span>;
@@ -39,9 +40,10 @@ function SectionHeader({ title, emoji, count, badgeColor = 'bg-pass' }) {
   );
 }
 
-export default function SamirQueue({ hotLeads, loans, churn, onRemove, onRefresh }) {
+export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested = [], onRemove, onRefresh }) {
+  // Sort hot leads by sentiment score descending
   const sortedLeads = useMemo(() =>
-    [...hotLeads].sort((a, b) => (b['Call Date'] || '').localeCompare(a['Call Date'] || '')),
+    [...hotLeads].sort((a, b) => (b['Customer Sentiment Score'] || 0) - (a['Customer Sentiment Score'] || 0)),
     [hotLeads]
   );
 
@@ -53,6 +55,11 @@ export default function SamirQueue({ hotLeads, loans, churn, onRemove, onRefresh
   const sortedChurn = useMemo(() =>
     [...churn].sort((a, b) => (b['Prior Call Attempts'] || 0) - (a['Prior Call Attempts'] || 0)),
     [churn]
+  );
+
+  const sortedCallbacksReq = useMemo(() =>
+    [...callbacksRequested].sort((a, b) => (b['Call Date'] || '').localeCompare(a['Call Date'] || '')),
+    [callbacksRequested]
   );
 
   const handleFollowUp = async (r) => {
@@ -76,18 +83,25 @@ export default function SamirQueue({ hotLeads, loans, churn, onRemove, onRefresh
     } catch (e) { alert('Failed: ' + e.message); }
   };
 
+  const handleCallbackDone = async (r) => {
+    try {
+      await patchRecord(r.id, { 'Callback Requested': false });
+      onRemove('callbacksRequested', r.id);
+    } catch (e) { alert('Failed: ' + e.message); }
+  };
+
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-bold text-gray-900">Samir — Action Queue</h2>
-        <p className="text-sm text-gray-500">Leads · Loans · Churn</p>
+        <p className="text-sm text-gray-500">Callbacks · Leads · Loans · Churn</p>
       </div>
 
-      {/* HOT LEADS */}
+      {/* CALLBACKS REQUESTED */}
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-        <SectionHeader title="Hot Leads" emoji="🟢" count={sortedLeads.length} badgeColor="bg-pass" />
-        {sortedLeads.length === 0 ? (
-          <p className="px-4 py-8 text-center text-gray-400">✅ No hot leads right now</p>
+        <SectionHeader title="Callbacks Requested" emoji="📞" count={sortedCallbacksReq.length} badgeColor="bg-amber" />
+        {sortedCallbacksReq.length === 0 ? (
+          <p className="px-4 py-8 text-center text-gray-400">No callback requests</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -95,6 +109,52 @@ export default function SamirQueue({ hotLeads, loans, churn, onRemove, onRefresh
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Subscriber</th>
                   <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Sentiment</th>
+                  <th className="px-4 py-2">Intent</th>
+                  <th className="px-4 py-2">Agent</th>
+                  <th className="px-4 py-2">Date</th>
+                  <th className="px-4 py-2 max-w-[200px]">Summary</th>
+                  <th className="px-4 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedCallbacksReq.map(r => (
+                  <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
+                    <td className="px-4 py-2">{r['Subscriber Name'] || '--'}</td>
+                    <td className="px-4 py-2">
+                      <PhoneNumber number={r['Mobile Number']} />
+                    </td>
+                    <td className="px-4 py-2">
+                      {r['Customer Sentiment Score'] != null ? (
+                        <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
+                      ) : '--'}
+                    </td>
+                    <td className="px-4 py-2">{r['Customer Intent Signal'] || '--'}</td>
+                    <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
+                    <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
+                    <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                    <td className="px-4 py-2"><ActionButton label="✓ Called Back" onClick={() => handleCallbackDone(r)} color="bg-amber" /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* HOT LEADS */}
+      <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        <SectionHeader title="Hot Leads" emoji="🟢" count={sortedLeads.length} badgeColor="bg-pass" />
+        {sortedLeads.length === 0 ? (
+          <p className="px-4 py-8 text-center text-gray-400">No hot leads right now</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
+                  <th className="px-4 py-2">Subscriber</th>
+                  <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Sentiment</th>
                   <th className="px-4 py-2">Conversion Reason</th>
                   <th className="px-4 py-2">Tone</th>
                   <th className="px-4 py-2">Bureau</th>
@@ -109,7 +169,12 @@ export default function SamirQueue({ hotLeads, loans, churn, onRemove, onRefresh
                   <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
                     <td className="px-4 py-2">{r['Subscriber Name'] || '--'}</td>
                     <td className="px-4 py-2">
-                      {r['Mobile Number'] ? <a href={`tel:${r['Mobile Number']}`} className="text-info underline">{r['Mobile Number']}</a> : '--'}
+                      <PhoneNumber number={r['Mobile Number']} />
+                    </td>
+                    <td className="px-4 py-2">
+                      {r['Customer Sentiment Score'] != null ? (
+                        <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
+                      ) : '--'}
                     </td>
                     <td className="px-4 py-2 text-xs">{r['Conversion Reason'] || '--'}</td>
                     <td className="px-4 py-2"><Chip text={r['Customer Tone'] || '--'} className={toneColor(r['Customer Tone'])} /></td>
@@ -130,7 +195,7 @@ export default function SamirQueue({ hotLeads, loans, churn, onRemove, onRefresh
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         <SectionHeader title="Loan Signals" emoji="💰" count={sortedLoans.length} badgeColor="bg-info" />
         {sortedLoans.length === 0 ? (
-          <p className="px-4 py-8 text-center text-gray-400">✅ No loan signals right now</p>
+          <p className="px-4 py-8 text-center text-gray-400">No loan signals right now</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -138,6 +203,7 @@ export default function SamirQueue({ hotLeads, loans, churn, onRemove, onRefresh
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Subscriber</th>
                   <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Sentiment</th>
                   <th className="px-4 py-2">Loan Context</th>
                   <th className="px-4 py-2">Days Since Purchase</th>
                   <th className="px-4 py-2">Bureau</th>
@@ -152,7 +218,12 @@ export default function SamirQueue({ hotLeads, loans, churn, onRemove, onRefresh
                   <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
                     <td className="px-4 py-2">{r['Subscriber Name'] || '--'}</td>
                     <td className="px-4 py-2">
-                      {r['Mobile Number'] ? <a href={`tel:${r['Mobile Number']}`} className="text-info underline">{r['Mobile Number']}</a> : '--'}
+                      <PhoneNumber number={r['Mobile Number']} />
+                    </td>
+                    <td className="px-4 py-2">
+                      {r['Customer Sentiment Score'] != null ? (
+                        <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
+                      ) : '--'}
                     </td>
                     <td className="px-4 py-2 text-xs">{r['Loan Context'] || '--'}</td>
                     <td className="px-4 py-2 font-mono">{r['Days Since Purchase'] ?? '—'}</td>
@@ -173,7 +244,7 @@ export default function SamirQueue({ hotLeads, loans, churn, onRemove, onRefresh
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         <SectionHeader title="Churn Risk" emoji="⚠️" count={sortedChurn.length} badgeColor="bg-fail" />
         {sortedChurn.length === 0 ? (
-          <p className="px-4 py-8 text-center text-gray-400">✅ No churn risks right now</p>
+          <p className="px-4 py-8 text-center text-gray-400">No churn risks right now</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -181,6 +252,7 @@ export default function SamirQueue({ hotLeads, loans, churn, onRemove, onRefresh
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Subscriber</th>
                   <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Sentiment</th>
                   <th className="px-4 py-2">Churn Reason</th>
                   <th className="px-4 py-2">Sentiment</th>
                   <th className="px-4 py-2">Tone</th>
@@ -197,7 +269,12 @@ export default function SamirQueue({ hotLeads, loans, churn, onRemove, onRefresh
                   <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
                     <td className="px-4 py-2">{r['Subscriber Name'] || '--'}</td>
                     <td className="px-4 py-2">
-                      {r['Mobile Number'] ? <a href={`tel:${r['Mobile Number']}`} className="text-info underline">{r['Mobile Number']}</a> : '--'}
+                      <PhoneNumber number={r['Mobile Number']} />
+                    </td>
+                    <td className="px-4 py-2">
+                      {r['Customer Sentiment Score'] != null ? (
+                        <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
+                      ) : '--'}
                     </td>
                     <td className="px-4 py-2 text-xs">{r['Churn Reason'] || '--'}</td>
                     <td className="px-4 py-2"><Chip text={r['Sentiment'] || '--'} className={sentimentColor(r['Sentiment'])} /></td>
