@@ -26,15 +26,15 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
   );
 
   // SECTION A: Callback Queue
-  const sortedCallbacks = useMemo(() =>
-    [...callbacks].sort((a, b) => {
-      const pa = a['Callback Priority'] === 'Urgent' ? 0 : 1;
-      const pb = b['Callback Priority'] === 'Urgent' ? 0 : 1;
+  const sortedCallbacks = useMemo(() => {
+    const prio = { Urgent: 0, High: 1, Normal: 2 };
+    return [...callbacks].sort((a, b) => {
+      const pa = prio[a['Callback Priority']] ?? 2;
+      const pb = prio[b['Callback Priority']] ?? 2;
       if (pa !== pb) return pa - pb;
       return (b['Call Date'] || '').localeCompare(a['Call Date'] || '');
-    }),
-    [callbacks]
-  );
+    });
+  }, [callbacks]);
 
   const handleMarkCalled = async (r) => {
     try {
@@ -174,8 +174,10 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                   <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
                     <td className="px-4 py-2">
                       {r['Callback Priority'] === 'Urgent'
-                        ? <Chip text="🔴 Urgent" className="bg-red-100 text-fail" />
-                        : <Chip text="🟡 Normal" className="bg-yellow-100 text-amber" />}
+                        ? <Chip text="🔴 Urgent" className="bg-red-600 text-white" />
+                        : r['Callback Priority'] === 'High'
+                        ? <Chip text="🟠 High" className="bg-orange-500 text-white" />
+                        : <Chip text="⚪ Normal" className="bg-gray-200 text-gray-700" />}
                     </td>
                     <td className="px-4 py-2">
                       <Chip text={r['Callback Due'] || '--'} className="bg-gray-100 text-gray-700" />
