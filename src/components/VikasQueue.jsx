@@ -121,9 +121,9 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
               <tbody>
                 {sortedCallbacksReq.map(r => (
                   <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
-                    <td className="px-4 py-2">{r['Subscriber Name'] || r['Mobile Number'] || '--'}</td>
+                    <td className="px-4 py-2">{r['Subscriber Name'] || '--'}</td>
                     <td className="px-4 py-2">
-                      {r['Mobile Number'] ? <a href={`tel:${r['Mobile Number']}`} className="text-info underline">{r['Mobile Number']}</a> : '--'}
+                      <PhoneNumber number={r['Mobile Number']} />
                     </td>
                     <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                     <td className="px-4 py-2 whitespace-nowrap">{r['Call Time'] || '--'}</td>
