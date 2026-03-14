@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+@theme {
+  --color-pass: #16a34a;
+  --color-amber: #d97706;
+  --color-fail: #dc2626;
+  --color-info: #2563eb;
+  --color-bg: #f9fafb;
+  --color-card: #ffffff;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+#root {
+  min-height: 100svh;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.pulse-dot {
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
