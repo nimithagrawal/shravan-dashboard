@@ -68,6 +68,15 @@ export function intentChipColor(intent) {
   return 'bg-gray-100 text-gray-600';
 }
 
+export function conversionSignalColor(signal) {
+  if (signal === 'hot') return 'bg-red-100 text-red-700';
+  if (signal === 'warm') return 'bg-yellow-100 text-amber';
+  if (signal === 'cold') return 'bg-gray-100 text-gray-600';
+  if (signal === 'dead') return 'bg-gray-800 text-white';
+  if (signal === 'Unreachable') return 'bg-blue-100 text-blue-700';
+  return 'bg-gray-100 text-gray-500';
+}
+
 export function maskPhone(num) {
   if (!num) return '--';
   const s = String(num).replace(/\D/g, '');

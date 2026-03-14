@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { qaScore, qaRating, fmtDuration, outcomeColor, ratingColor, kpiColor, sentimentDotColor, intentChipColor, sentimentScoreColor } from '../lib/helpers';
+import { qaScore, qaRating, fmtDuration, outcomeColor, ratingColor, kpiColor, sentimentDotColor, intentChipColor, sentimentScoreColor, conversionSignalColor } from '../lib/helpers';
 import PhoneNumber from './PhoneNumber';
 
 function KpiCard({ label, value, color, badge }) {
@@ -53,6 +53,18 @@ export default function Overview({ today, recent }) {
   }, [today]);
 
   const callbackRequestedCount = today.filter(r => r['Callback Requested']).length;
+
+  // Conversion funnel
+  const conversionCounts = useMemo(() => {
+    const c = { hot: 0, warm: 0, cold: 0, dead: 0, Unreachable: 0 };
+    today.forEach(r => {
+      const sig = r['Conversion Signal'];
+      if (sig && c[sig] !== undefined) c[sig]++;
+    });
+    return c;
+  }, [today]);
+  const probableTransactors = conversionCounts.hot + conversionCounts.warm;
+  const retryQueue = conversionCounts.Unreachable;
 
   const languageBreakdown = useMemo(() => {
     const counts = {};
@@ -136,6 +148,39 @@ export default function Overview({ today, recent }) {
         </div>
       </div>
 
+      {/* Conversion Intelligence */}
+      <div className="bg-card rounded-xl p-4 shadow-sm border border-gray-100">
+        <h2 className="text-sm font-semibold text-gray-700 mb-3">Conversion Intelligence</h2>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+          <div>
+            <p className="text-xs text-gray-500 mb-2">Signal Breakdown</p>
+            <div className="flex flex-wrap gap-1.5">
+              {conversionCounts.hot > 0 && <Chip text={`Hot ${conversionCounts.hot}`} className="bg-red-100 text-red-700" />}
+              {conversionCounts.warm > 0 && <Chip text={`Warm ${conversionCounts.warm}`} className="bg-yellow-100 text-amber" />}
+              {conversionCounts.cold > 0 && <Chip text={`Cold ${conversionCounts.cold}`} className="bg-gray-200 text-gray-600" />}
+              {conversionCounts.dead > 0 && <Chip text={`Dead ${conversionCounts.dead}`} className="bg-gray-800 text-white" />}
+              {conversionCounts.Unreachable > 0 && <Chip text={`Unreachable ${conversionCounts.Unreachable}`} className="bg-blue-100 text-blue-700" />}
+              {Object.values(conversionCounts).every(v => v === 0) && <span className="text-gray-400 text-xs">No data</span>}
+            </div>
+          </div>
+          <div>
+            <p className="text-xs text-gray-500 mb-1">Probable Transactors</p>
+            <p className={`text-xl font-bold ${probableTransactors > 0 ? 'text-pass' : 'text-gray-400'}`}>{probableTransactors}</p>
+            <p className="text-[10px] text-gray-400">Hot + Warm only</p>
+          </div>
+          <div>
+            <p className="text-xs text-gray-500 mb-1">Retry Queue</p>
+            <p className={`text-xl font-bold ${retryQueue > 0 ? 'text-blue-600' : 'text-gray-400'}`}>{retryQueue}</p>
+            {retryQueue > 0 && <p className="text-[10px] text-blue-500">{retryQueue} not reached — eligible for retry</p>}
+          </div>
+          <div>
+            <p className="text-xs text-gray-500 mb-1">Permanently Lost</p>
+            <p className={`text-xl font-bold ${conversionCounts.dead > 0 ? 'text-gray-700' : 'text-gray-400'}`}>{conversionCounts.dead}</p>
+            <p className="text-[10px] text-gray-400">Explicit refusals only</p>
+          </div>
+        </div>
+      </div>
+
       {/* Agent QA Chart */}
       {agentData.length > 0 && (
         <div className="bg-card rounded-xl p-4 shadow-sm border border-gray-100">
@@ -169,12 +214,13 @@ export default function Overview({ today, recent }) {
                 <th className="px-4 py-2">Rating</th>
                 <th className="px-4 py-2">Sentiment</th>
                 <th className="px-4 py-2">Intent</th>
+                <th className="px-4 py-2">Conv.</th>
                 <th className="px-4 py-2">Signals</th>
               </tr>
             </thead>
             <tbody>
               {recentScored.length === 0 && (
-                <tr><td colSpan={10} className="px-4 py-8 text-center text-gray-400">No calls yet</td></tr>
+                <tr><td colSpan={11} className="px-4 py-8 text-center text-gray-400">No calls yet</td></tr>
               )}
               {recentScored.map((r, i) => (
                 <React.Fragment key={r.id || i}>
@@ -202,6 +248,11 @@ export default function Overview({ today, recent }) {
                         <Chip text={r['Customer Intent Signal']} className={intentChipColor(r['Customer Intent Signal'])} />
                       ) : <span className="text-gray-300">--</span>}
                     </td>
+                    <td className="px-4 py-2">
+                      {r['Conversion Signal'] ? (
+                        <Chip text={r['Conversion Signal']} className={conversionSignalColor(r['Conversion Signal'])} />
+                      ) : <span className="text-gray-300">--</span>}
+                    </td>
                     <td className="px-4 py-2 space-x-0.5 text-sm">
                       {r['Compliance Violation'] && <span title="Compliance">🚨</span>}
                       {r['Hot Lead'] && <span title="Hot Lead">🟢</span>}
@@ -212,7 +263,7 @@ export default function Overview({ today, recent }) {
                   </tr>
                   {expanded === i && (
                     <tr className="bg-gray-50">
-                      <td colSpan={10} className="px-4 py-4">
+                      <td colSpan={11} className="px-4 py-4">
                         <div className="grid gap-3 text-xs max-w-3xl">
                           <div>
                             <p className="font-semibold text-gray-600 mb-1">QA Checklist</p>
