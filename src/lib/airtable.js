@@ -4,6 +4,21 @@ const TABLE = import.meta.env.VITE_AIRTABLE_TABLE;
 const API = `https://api.airtable.com/v0/${BASE}/${TABLE}`;
 const HEADERS = { Authorization: `Bearer ${PAT}` };
 
+// Field ID → stable camelCase alias (resilient to renames)
+const FIELD_ALIASES = {
+  'Call Disposition': 'callDisposition',   // fldujucuK2u2W85gw
+  'Call Category': 'callCategory',         // fld68ebmlqwuEs86M
+  'Evaluation Framework': 'evaluationFramework', // fldXas5cpym8NThbe
+};
+
+function mapRecord(r) {
+  const rec = { id: r.id, ...r.fields };
+  for (const [name, alias] of Object.entries(FIELD_ALIASES)) {
+    rec[alias] = rec[name] ?? null;
+  }
+  return rec;
+}
+
 async function fetchAll(formula = '') {
   let all = [];
   let offset = null;
@@ -18,7 +33,7 @@ async function fetchAll(formula = '') {
     all = all.concat(data.records || []);
     offset = data.offset;
   } while (offset);
-  return all.map(r => ({ id: r.id, ...r.fields }));
+  return all.map(mapRecord);
 }
 
 export async function fetchToday() {
@@ -53,7 +68,7 @@ export async function fetchRecent(limit = 50) {
   const res = await fetch(`${API}?${params}`, { headers: HEADERS });
   if (!res.ok) throw new Error(`Airtable ${res.status}`);
   const data = await res.json();
-  return (data.records || []).map(r => ({ id: r.id, ...r.fields }));
+  return (data.records || []).map(mapRecord);
 }
 
 export async function patchRecord(recordId, fields) {

@@ -77,6 +77,23 @@ export function conversionSignalColor(signal) {
   return 'bg-gray-100 text-gray-500';
 }
 
+export function callCategoryColor(cat) {
+  if (cat === 'Welcome-Call') return 'bg-blue-800 text-white';
+  if (cat === 'Outbound-Service-Followup') return 'bg-amber-600 text-white';
+  if (cat === 'Outbound-Agent-Reachout') return 'bg-teal-600 text-white';
+  if (cat === 'Inbound-Subscriber') return 'bg-green-600 text-white';
+  if (cat === 'Unknown') return 'bg-gray-400 text-white';
+  return 'bg-gray-200 text-gray-600';
+}
+
+export function callDispositionColor(disp) {
+  if (disp === 'Connected-Full') return 'bg-green-100 text-green-700';
+  if (disp === 'Connected-Short') return 'bg-yellow-100 text-amber';
+  if (disp === 'Voicemail' || disp === 'Busy' || disp === 'Not-Reachable' || disp === 'Switched-Off') return 'bg-blue-100 text-blue-700';
+  if (disp === 'Wrong-Number' || disp === 'Hung-Up-Immediately') return 'bg-red-100 text-red-700';
+  return 'bg-gray-100 text-gray-600';
+}
+
 export function maskPhone(num) {
   if (!num) return '--';
   const s = String(num).replace(/\D/g, '');

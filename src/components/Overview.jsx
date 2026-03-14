@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-import { qaScore, qaRating, fmtDuration, outcomeColor, ratingColor, kpiColor, sentimentDotColor, intentChipColor, sentimentScoreColor, conversionSignalColor } from '../lib/helpers';
+import { qaScore, qaRating, fmtDuration, outcomeColor, ratingColor, kpiColor, sentimentDotColor, intentChipColor, sentimentScoreColor, conversionSignalColor, callCategoryColor, callDispositionColor } from '../lib/helpers';
 import PhoneNumber from './PhoneNumber';
 
 function KpiCard({ label, value, color, badge }) {
@@ -215,12 +215,14 @@ export default function Overview({ today, recent }) {
                 <th className="px-4 py-2">Sentiment</th>
                 <th className="px-4 py-2">Intent</th>
                 <th className="px-4 py-2">Conv.</th>
+                <th className="px-4 py-2">Category</th>
+                <th className="px-4 py-2">Disposition</th>
                 <th className="px-4 py-2">Signals</th>
               </tr>
             </thead>
             <tbody>
               {recentScored.length === 0 && (
-                <tr><td colSpan={11} className="px-4 py-8 text-center text-gray-400">No calls yet</td></tr>
+                <tr><td colSpan={13} className="px-4 py-8 text-center text-gray-400">No calls yet</td></tr>
               )}
               {recentScored.map((r, i) => (
                 <React.Fragment key={r.id || i}>
@@ -253,6 +255,16 @@ export default function Overview({ today, recent }) {
                         <Chip text={r['Conversion Signal']} className={conversionSignalColor(r['Conversion Signal'])} />
                       ) : <span className="text-gray-300">--</span>}
                     </td>
+                    <td className="px-4 py-2">
+                      {r.callCategory ? (
+                        <Chip text={r.callCategory} className={callCategoryColor(r.callCategory)} />
+                      ) : <span className="text-gray-300">--</span>}
+                    </td>
+                    <td className="px-4 py-2">
+                      {r.callDisposition ? (
+                        <Chip text={r.callDisposition} className={callDispositionColor(r.callDisposition)} />
+                      ) : <span className="text-gray-300">--</span>}
+                    </td>
                     <td className="px-4 py-2 space-x-0.5 text-sm">
                       {r['Compliance Violation'] && <span title="Compliance">🚨</span>}
                       {r['Hot Lead'] && <span title="Hot Lead">🟢</span>}
@@ -263,7 +275,7 @@ export default function Overview({ today, recent }) {
                   </tr>
                   {expanded === i && (
                     <tr className="bg-gray-50">
-                      <td colSpan={11} className="px-4 py-4">
+                      <td colSpan={13} className="px-4 py-4">
                         <div className="grid gap-3 text-xs max-w-3xl">
                           <div>
                             <p className="font-semibold text-gray-600 mb-1">QA Checklist</p>
@@ -293,6 +305,17 @@ export default function Overview({ today, recent }) {
                               {r['Customer Objection'] && (
                                 <p className="mt-1 text-amber">Objection: {r['Customer Objection']}</p>
                               )}
+                            </div>
+                          )}
+                          {/* Call Classification */}
+                          {(r.callCategory || r.callDisposition || r.evaluationFramework) && (
+                            <div>
+                              <p className="font-semibold text-gray-600 mb-1">Call Classification</p>
+                              <div className="flex flex-wrap gap-3">
+                                {r.callCategory && <span>Category: <Chip text={r.callCategory} className={callCategoryColor(r.callCategory)} /></span>}
+                                {r.callDisposition && <span>Disposition: <Chip text={r.callDisposition} className={callDispositionColor(r.callDisposition)} /></span>}
+                                {r.evaluationFramework && <span>Framework: <span className="font-medium">{r.evaluationFramework}</span></span>}
+                              </div>
                             </div>
                           )}
                           {r['Compliance Detail'] && (
