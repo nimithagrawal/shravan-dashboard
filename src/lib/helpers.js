@@ -471,19 +471,21 @@ export function pitchQualityIssue(r) {
 export function scrapeAgeStatus(dateStr) {
   if (!dateStr) return { label: 'Unknown', color: 'text-gray-400' };
   const parsed = new Date(dateStr);
-  // If it's a date-only string (e.g. "2026-03-15"), show "Today" instead of wrong minutes
+  // If it's a date-only string (e.g. "2026-03-15"), we can't compute real age
   const isDateOnly = typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateStr);
   if (isDateOnly) {
     const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
     if (dateStr === todayStr) return { label: 'Today', color: 'text-pass' };
     return { label: dateStr, color: 'text-amber' };
   }
+  // Full datetime — show "Xm ago @ HH:MM"
+  const timeStr = parsed.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
   const diff = (Date.now() - parsed.getTime()) / 60000;
-  if (diff < 35) return { label: `${Math.round(diff)}m ago`, color: 'text-pass' };
-  if (diff < 65) return { label: `${Math.round(diff)}m ago`, color: 'text-amber' };
-  if (diff < 120) return { label: `${Math.round(diff)}m ago`, color: 'text-fail' };
+  if (diff < 35) return { label: `${Math.round(diff)}m ago · ${timeStr}`, color: 'text-pass' };
+  if (diff < 65) return { label: `${Math.round(diff)}m ago · ${timeStr}`, color: 'text-amber' };
+  if (diff < 120) return { label: `${Math.round(diff)}m ago · ${timeStr}`, color: 'text-fail' };
   const hrs = Math.round(diff / 60);
-  return { label: `${hrs}h ago`, color: 'text-fail' };
+  return { label: `${hrs}h ago · ${timeStr}`, color: 'text-fail' };
 }
 
 // ── Period / Talk Time helpers ──
