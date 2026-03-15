@@ -449,6 +449,101 @@ export function pitchQualityIssue(r) {
 }
 
 /**
+ * Detect whether a call record shows CUSTOMER-initiated health transaction intent.
+ * Returns true only when the CUSTOMER (not the agent) expressed interest in a
+ * health service transaction: medicine, diagnostics, surgery, hospital,
+ * doctor consultation, lab test, treatment, etc.
+ *
+ * Used to filter Samir Queue to actionable transaction opportunities.
+ */
+export function hasHealthTransactionIntent(r) {
+  const summary = (r['Summary'] || '').toLowerCase();
+  const convReason = (r['Conversion Reason'] || '').toLowerCase();
+  const loanCtx = (r['Loan Context'] || '').toLowerCase();
+  const churnReason = (r['Churn Reason'] || '').toLowerCase();
+  const allText = `${summary} ${convReason} ${loanCtx} ${churnReason}`;
+
+  // Health service / transaction keywords
+  const healthKW = [
+    'medicine', 'medicines', 'medication', 'medical store', 'pharmacy', 'chemist',
+    'diagnostic', 'diagnostics', 'lab test', 'blood test', 'pathology', 'test report',
+    'surgery', 'surgical', 'operation',
+    'hospital', 'hospitali', 'admitted', 'admission',
+    'doctor', 'consultation', 'consult ', 'appointment',
+    'health check', 'checkup', 'check-up', 'check up',
+    'treatment', 'therapy', 'physiotherapy',
+    'opd', 'ipd', 'outpatient', 'inpatient',
+    'dental', 'eye care', 'eye test', 'vision',
+    'x-ray', 'xray', 'mri', 'ct scan', 'ultrasound', 'scan report',
+    'specialist', 'clinic',
+    'wellness', 'teleconsult',
+  ];
+
+  // 1. Must mention a health service somewhere
+  const hasHealthKW = healthKW.some(kw => allText.includes(kw));
+  if (!hasHealthKW) return false;
+
+  // 2. Customer intent indicators — subscriber/customer is the one asking / needing
+  const customerIntentPhrases = [
+    // Explicit customer actions
+    'subscriber asked', 'subscriber inquired', 'subscriber wanted',
+    'subscriber needs', 'subscriber expressed', 'subscriber mentioned',
+    'subscriber requested', 'subscriber is interested', 'subscriber is looking',
+    'subscriber is planning', 'subscriber wants', 'subscriber required',
+    'subscriber showed interest',
+    'customer asked', 'customer inquired', 'customer wanted',
+    'customer needs', 'customer expressed', 'customer mentioned',
+    'customer requested', 'customer is interested', 'customer is looking',
+    'customer wants', 'customer showed interest',
+    // Generic intent phrases
+    'asked about', 'inquired about', 'wanted to know',
+    'interested in', 'looking for', 'expressed interest',
+    'planning to', 'plans to', 'wants to use', 'want to use',
+    'how to use', 'how to avail', 'how to claim', 'where to',
+    'avail the', 'availing', 'utilize', 'use the plan for',
+    'use the card', 'use it for', 'use the health',
+    'need medicine', 'needs medicine', 'need surgery', 'needs surgery',
+    'need treatment', 'needs treatment', 'need consultation',
+    'needs consultation', 'needs diagnostic', 'need diagnostic',
+    'needs doctor', 'need doctor', 'need hospital', 'needs hospital',
+    'buy medicine', 'purchase medicine', 'get medicine',
+    'book appointment', 'book a consultation', 'book a doctor',
+    'visit hospital', 'visit doctor', 'visit clinic',
+    'get tested', 'get a test', 'get diagnosed', 'get treatment',
+    'going to hospital', 'going for surgery', 'going for treatment',
+    'upcoming surgery', 'upcoming appointment', 'upcoming treatment',
+    'scheduled surgery', 'scheduled for',
+  ];
+
+  const hasCustomerIntent = customerIntentPhrases.some(p => summary.includes(p));
+
+  // 3. Structured interest signal from AI tagging
+  const intent = r['Customer Intent Signal'];
+  const isStructuredInterest = intent === 'Interested' || intent === 'Considering';
+
+  // 4. If customer showed intent in text or structured fields → yes
+  if (hasCustomerIntent || isStructuredInterest) return true;
+
+  // 5. Negative check: if only the agent mentioned health topics → exclude
+  //    (agent informed/explained/told about health benefits = pitch, not customer intent)
+  const agentOnlyPhrases = [
+    'agent informed', 'agent explained', 'agent told', 'agent mentioned',
+    'agent provided', 'agent described', 'agent shared',
+    'was informed about', 'was told about', 'was explained',
+    'informed the subscriber', 'informed the customer',
+    'explained the benefits', 'explained the plan', 'explained the health',
+  ];
+  const isAgentPitch = agentOnlyPhrases.some(p => summary.includes(p));
+  if (isAgentPitch) return false;
+
+  // 6. If health keywords are in Conversion Reason or Loan Context (already signals)
+  //    these fields are specifically about customer signals, so trust them
+  if (healthKW.some(kw => convReason.includes(kw) || loanCtx.includes(kw))) return true;
+
+  return false;
+}
+
+/**
  * Scrape freshness: green <35m, amber 35-65m, red >65m
  */
 export function scrapeAgeStatus(dateStr) {

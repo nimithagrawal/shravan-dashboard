@@ -1,6 +1,6 @@
 import { useState, useMemo, Fragment } from 'react';
 import { patchRecord } from '../lib/airtable';
-import { truncate, sentimentScoreColor, fmtDuration, computeGist, gistColor, subscriberType, subscriberTypeColor } from '../lib/helpers';
+import { truncate, sentimentScoreColor, fmtDuration, computeGist, gistColor, subscriberType, subscriberTypeColor, hasHealthTransactionIntent } from '../lib/helpers';
 import PhoneNumber from './PhoneNumber';
 
 function Chip({ text, className }) {
@@ -94,28 +94,39 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
     }, 1500);
   };
 
+  // Filter all sections to only show customer health-transaction intent
+  const filteredLeads = useMemo(() => hotLeads.filter(hasHealthTransactionIntent), [hotLeads]);
+  const filteredLoans = useMemo(() => loans.filter(hasHealthTransactionIntent), [loans]);
+  const filteredChurn = useMemo(() => churn.filter(hasHealthTransactionIntent), [churn]);
+  const filteredCallbacksReq = useMemo(() => callbacksRequested.filter(hasHealthTransactionIntent), [callbacksRequested]);
+
+  // Total filtered out for transparency
+  const totalRaw = hotLeads.length + loans.length + churn.length + callbacksRequested.length;
+  const totalFiltered = filteredLeads.length + filteredLoans.length + filteredChurn.length + filteredCallbacksReq.length;
+  const filteredOut = totalRaw - totalFiltered;
+
   // Hot leads: sentiment score DESC
   const sortedLeads = useMemo(() =>
-    [...hotLeads].sort((a, b) => (b['Customer Sentiment Score'] || 0) - (a['Customer Sentiment Score'] || 0)),
-    [hotLeads]
+    [...filteredLeads].sort((a, b) => (b['Customer Sentiment Score'] || 0) - (a['Customer Sentiment Score'] || 0)),
+    [filteredLeads]
   );
 
   // Loans: Days Since Purchase ASC (most recent purchase first = most time-sensitive)
   const sortedLoans = useMemo(() =>
-    [...loans].sort((a, b) => (a['Days Since Purchase'] ?? 9999) - (b['Days Since Purchase'] ?? 9999)),
-    [loans]
+    [...filteredLoans].sort((a, b) => (a['Days Since Purchase'] ?? 9999) - (b['Days Since Purchase'] ?? 9999)),
+    [filteredLoans]
   );
 
   // Churn: Prior Attempts DESC (most attempts = most at risk)
   const sortedChurn = useMemo(() =>
-    [...churn].sort((a, b) => (b['Prior Call Attempts'] || 0) - (a['Prior Call Attempts'] || 0)),
-    [churn]
+    [...filteredChurn].sort((a, b) => (b['Prior Call Attempts'] || 0) - (a['Prior Call Attempts'] || 0)),
+    [filteredChurn]
   );
 
   // Callbacks: Call Time ASC (earliest first)
   const sortedCallbacksReq = useMemo(() =>
-    [...callbacksRequested].sort((a, b) => (a['Call Time'] || '').localeCompare(b['Call Time'] || '')),
-    [callbacksRequested]
+    [...filteredCallbacksReq].sort((a, b) => (a['Call Time'] || '').localeCompare(b['Call Time'] || '')),
+    [filteredCallbacksReq]
   );
 
   const handleFollowUp = async (r) => {
@@ -150,8 +161,11 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-bold text-gray-900">Samir — Action Queue</h2>
-        <p className="text-sm text-gray-500">Callbacks · Leads · Loans · Churn</p>
-        <p className="text-[10px] text-gray-400 mt-0.5">Action queues always show today's data</p>
+        <p className="text-sm text-gray-500">Health Transaction Intent — Medicine · Diagnostics · Surgery · Hospital · Consultation</p>
+        <p className="text-[10px] text-gray-400 mt-0.5">
+          Showing {totalFiltered} calls with customer transaction intent
+          {filteredOut > 0 && <span> · {filteredOut} non-transaction calls hidden</span>}
+        </p>
       </div>
 
       {/* CALLBACKS REQUESTED */}
