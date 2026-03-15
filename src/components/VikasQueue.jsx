@@ -1,6 +1,6 @@
-import { useMemo } from 'react';
+import { useState, useMemo, Fragment } from 'react';
 import { patchRecord } from '../lib/airtable';
-import { qaScore, qaRating, fmtDuration, ratingColor, truncate, computeQAFailureReason, isHumanPickup, kpiColor } from '../lib/helpers';
+import { qaScore, qaRating, fmtDuration, ratingColor, truncate, computeQAFailureReason, isHumanPickup, kpiColor, computeGist, gistColor, extractScheduledCallback } from '../lib/helpers';
 import PhoneNumber from './PhoneNumber';
 
 function Chip({ text, className }) {
@@ -18,7 +18,61 @@ function ActionButton({ label, onClick }) {
   );
 }
 
+function ExpandedRow({ r, colSpan }) {
+  const QA_LABELS = ['Q1 User Agent Screened', 'Q2 Cashback Correct', 'Q3 WA Link Sent', 'Q4 Hi Attempt Made', 'Q5 Cashback Mechanic Explained', 'Q6 No Improvised Claims'];
+  return (
+    <tr className="bg-gray-50">
+      <td colSpan={colSpan} className="px-4 py-4">
+        <div className="grid gap-3 text-xs max-w-4xl">
+          {r['Summary'] && (
+            <div>
+              <p className="font-semibold text-gray-600">Summary</p>
+              <p className="text-gray-700">{r['Summary']}</p>
+            </div>
+          )}
+          {r['Transcript'] && (
+            <div>
+              <p className="font-semibold text-gray-600">Transcript</p>
+              <div className="max-h-40 overflow-y-auto bg-white p-2 rounded border text-gray-700 whitespace-pre-wrap">{r['Transcript']}</div>
+            </div>
+          )}
+          {r['Recording URL'] && (
+            <div>
+              <audio controls src={r['Recording URL']} className="h-8 w-full max-w-md" />
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2 text-xs text-gray-500">
+            {r['Call Outcome'] && <span>Outcome: {r['Call Outcome']}</span>}
+            {r['Conversion Signal'] && <span>Signal: {r['Conversion Signal']}</span>}
+            {r['Customer Intent Signal'] && <span>Intent: {r['Customer Intent Signal']}</span>}
+            {r['Attempt Number'] && <span>Attempt: {r['Attempt Number']}</span>}
+          </div>
+          {/* QA for welcome calls */}
+          {(r.callCategory === 'Welcome-Call' || r.evaluationFramework === 'Welcome-Call-QA') && (
+            <div>
+              <p className="font-semibold text-gray-600 mb-1">QA ({qaScore(r)}/6 — {qaRating(qaScore(r))})</p>
+              <div className="flex flex-wrap gap-2">
+                {QA_LABELS.map(q => (
+                  <span key={q} className="flex items-center gap-1">
+                    {r[q] ? <span className="text-pass">✓</span> : <span className="text-fail">✗</span>}
+                    <span className="text-gray-600">{q.replace(/^Q\d\s/, '')}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 export default function VikasQueue({ today, callbacks, callbacksRequested = [], onRemove, onRefresh }) {
+  const [expanded, setExpanded] = useState(null);
+  const [filterScheduledDate, setFilterScheduledDate] = useState('');
+
+  const toggle = (key) => setExpanded(expanded === key ? null : key);
+
   // Callbacks Requested (from Gemini sentiment)
   const sortedCallbacksReq = useMemo(() =>
     [...callbacksRequested].sort((a, b) => (b['Call Date'] || '').localeCompare(a['Call Date'] || '')),
@@ -55,7 +109,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
   };
 
   // SECTION B: QA Review — strict filter
-  // Welcome-Call only, duration>45, real transcript, FAIL|AMBER
+  const STT_FAILED = ['[STT Failed]', '[STT Failed — audio could not be processed]', 'failed', ''];
   const qaReview = useMemo(() => {
     return today
       .filter(r => {
@@ -66,7 +120,6 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
         const dur = r['Duration Seconds'];
         if (dur == null || dur <= 45) return false;
         const transcript = (r['Transcript'] || '').trim();
-        const STT_FAILED = ['[STT Failed]', '[STT Failed — audio could not be processed]', 'failed', ''];
         if (!transcript || STT_FAILED.includes(transcript)) return false;
         return true;
       })
@@ -75,6 +128,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
         _qs: qaScore(r),
         _qr: qaRating(qaScore(r)),
         _failReason: computeQAFailureReason(r),
+        _gist: computeGist(r),
       }))
       .filter(r => r._qr === 'FAIL' || r._qr === 'AMBER')
       .sort((a, b) => a._qs - b._qs);
@@ -82,7 +136,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
 
   const failCount = qaReview.filter(r => r._qr === 'FAIL').length;
 
-  // Count welcome calls for context
+  // Welcome call count for context
   const welcomeCallCount = useMemo(() =>
     today.filter(r => {
       const cat = r.callCategory || r['Call Disposition'];
@@ -102,6 +156,40 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
     return { outbound, unreachable };
   }, [today]);
 
+  // SECTION: Scheduled Callbacks — customers who asked to be called at specific time
+  const scheduledCallbacks = useMemo(() => {
+    return today
+      .map(r => ({ ...r, _scheduled: extractScheduledCallback(r), _gist: computeGist(r) }))
+      .filter(r => r._scheduled)
+      .sort((a, b) => (a._scheduled.raw || '').localeCompare(b._scheduled.raw || ''));
+  }, [today]);
+
+  const filteredScheduled = useMemo(() => {
+    if (!filterScheduledDate) return scheduledCallbacks;
+    return scheduledCallbacks.filter(r => {
+      const raw = (r._scheduled.raw || '').toLowerCase();
+      const filter = filterScheduledDate.toLowerCase();
+      return raw.includes(filter);
+    });
+  }, [scheduledCallbacks, filterScheduledDate]);
+
+  // SECTION: Welcome/Onboarding Calls — all welcome calls for today
+  const welcomeCalls = useMemo(() => {
+    return today
+      .filter(r => {
+        const cat = r.callCategory || r['Call Disposition'];
+        const fw = r.evaluationFramework || r['Evaluation Framework'];
+        return cat === 'Welcome-Call' || fw === 'Welcome-Call-QA';
+      })
+      .map(r => ({
+        ...r,
+        _qs: qaScore(r),
+        _qr: qaRating(qaScore(r)),
+        _gist: computeGist(r),
+      }))
+      .sort((a, b) => (b['Call Time'] || '').localeCompare(a['Call Time'] || ''));
+  }, [today]);
+
   // SECTION C: Agent Coaching Cards
   const coachingCards = useMemo(() => {
     const map = {};
@@ -116,7 +204,6 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
         map[agent].connected++;
         map[agent].totalSec += (r['Duration Seconds'] || 0);
       }
-      // QA for welcome calls only
       const cat = r.callCategory || r['Call Disposition'];
       const fw = r.evaluationFramework || r['Evaluation Framework'];
       if (cat === 'Welcome-Call' || fw === 'Welcome-Call-QA') {
@@ -133,7 +220,6 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
       const avgQa = a.welcomeQa.length > 0
         ? +(a.welcomeQa.reduce((s, v) => s + v, 0) / a.welcomeQa.length).toFixed(1)
         : null;
-      // Status logic
       let status = 'On Track';
       let statusColor = 'border-pass';
       if (avgQa !== null && avgQa < 3) {
@@ -156,7 +242,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-bold text-gray-900">Vikas — Action Queue</h2>
-        <p className="text-sm text-gray-500">Callbacks + QA Review + Coaching</p>
+        <p className="text-sm text-gray-500">Welcome Calls + Callbacks + QA Review + Coaching</p>
         <p className="text-[10px] text-gray-400 mt-0.5">Action queues always show today's data</p>
       </div>
 
@@ -176,35 +262,93 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Agent</th>
                   <th className="px-4 py-2">Time</th>
-                  <th className="px-4 py-2">Outcome</th>
                   <th className="px-4 py-2">Duration</th>
                   <th className="px-4 py-2 max-w-[200px]">Summary</th>
                   <th className="px-4 py-2"></th>
                 </tr>
               </thead>
               <tbody>
-                {sortedCallbacksReq.map(r => (
-                  <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
-                    <td className="px-4 py-2">
-                      <PhoneNumber number={r['Mobile Number']} />
-                    </td>
-                    <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
-                    <td className="px-4 py-2 whitespace-nowrap">{r['Call Time'] || '--'}</td>
-                    <td className="px-4 py-2">{r['Call Outcome'] || '--'}</td>
-                    <td className="px-4 py-2">{fmtDuration(r['Duration Seconds'])}</td>
-                    <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
-                    <td className="px-4 py-2">
-                      <ActionButton label="Done" onClick={() => handleCallbackReqDone(r)} />
-                    </td>
-                  </tr>
-                ))}
+                {sortedCallbacksReq.map((r, i) => {
+                  const key = `cbr-${r.id}`;
+                  const gist = computeGist(r);
+                  return (
+                    <Fragment key={r.id}>
+                      <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
+                        <td className="px-4 py-2"><PhoneNumber number={r['Mobile Number']} /></td>
+                        <td className={`px-4 py-2 text-xs ${gistColor(gist)}`}>{gist}</td>
+                        <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
+                        <td className="px-4 py-2 whitespace-nowrap">{r['Call Time'] || '--'}</td>
+                        <td className="px-4 py-2">{fmtDuration(r['Duration Seconds'])}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
+                          <ActionButton label="Done" onClick={() => handleCallbackReqDone(r)} />
+                        </td>
+                      </tr>
+                      {expanded === key && <ExpandedRow r={r} colSpan={7} />}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </div>
+
+      {/* Scheduled Callbacks — customer asked to call at specific date/time */}
+      {scheduledCallbacks.length > 0 && (
+        <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="flex items-center gap-2 p-4 pb-2">
+            <h3 className="text-sm font-semibold text-gray-700">Scheduled Callbacks</h3>
+            <span className="bg-info text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{scheduledCallbacks.length}</span>
+            <div className="ml-auto">
+              <input
+                type="text"
+                value={filterScheduledDate}
+                onChange={(e) => setFilterScheduledDate(e.target.value)}
+                placeholder="Filter by date/time..."
+                className="px-2 py-1 text-xs border border-gray-200 rounded-lg w-36 focus:outline-none focus:border-info"
+              />
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
+                  <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Requested Time</th>
+                  <th className="px-4 py-2">Gist</th>
+                  <th className="px-4 py-2">Agent</th>
+                  <th className="px-4 py-2">Call Time</th>
+                  <th className="px-4 py-2 max-w-[200px]">Summary</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredScheduled.map(r => {
+                  const key = `sch-${r.id}`;
+                  return (
+                    <Fragment key={r.id}>
+                      <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
+                        <td className="px-4 py-2"><PhoneNumber number={r['Mobile Number']} /></td>
+                        <td className="px-4 py-2">
+                          <Chip text={r._scheduled.raw} className="bg-blue-100 text-blue-700" />
+                        </td>
+                        <td className={`px-4 py-2 text-xs ${gistColor(r._gist)}`}>{r._gist}</td>
+                        <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
+                        <td className="px-4 py-2 whitespace-nowrap">{r['Call Time'] || '--'}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                      </tr>
+                      {expanded === key && <ExpandedRow r={r} colSpan={6} />}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* SECTION A: Callbacks Pending */}
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
@@ -224,52 +368,112 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                   <th className="px-4 py-2">Priority</th>
                   <th className="px-4 py-2">Due</th>
                   <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Agent</th>
-                  <th className="px-4 py-2">Attempt</th>
-                  <th className="px-4 py-2">Time</th>
-                  <th className="px-4 py-2">Outcome</th>
                   <th className="px-4 py-2">Duration</th>
                   <th className="px-4 py-2 max-w-[200px]">Summary</th>
                   <th className="px-4 py-2"></th>
                 </tr>
               </thead>
               <tbody>
-                {sortedCallbacks.map(r => (
-                  <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
-                    <td className="px-4 py-2">
-                      {r['Callback Priority'] === 'Urgent'
-                        ? <Chip text="Urgent" className="bg-red-600 text-white" />
-                        : r['Callback Priority'] === 'High'
-                        ? <Chip text="High" className="bg-orange-500 text-white" />
-                        : <Chip text="Normal" className="bg-gray-200 text-gray-700" />}
-                    </td>
-                    <td className="px-4 py-2">
-                      <Chip text={r['Callback Due'] || '--'} className="bg-gray-100 text-gray-700" />
-                    </td>
-                    <td className="px-4 py-2">
-                      <PhoneNumber number={r['Mobile Number']} />
-                    </td>
-                    <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
-                    <td className="px-4 py-2">{r['Attempt Number'] || '--'}</td>
-                    <td className="px-4 py-2 whitespace-nowrap">{r['Call Time'] || '--'}</td>
-                    <td className="px-4 py-2">{r['Call Outcome'] || '--'}</td>
-                    <td className="px-4 py-2">{fmtDuration(r['Duration Seconds'])}</td>
-                    <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
-                    <td className="px-4 py-2">
-                      <ActionButton label="Done" onClick={() => handleMarkCalled(r)} />
-                    </td>
-                  </tr>
-                ))}
+                {sortedCallbacks.map(r => {
+                  const key = `cb-${r.id}`;
+                  const gist = computeGist(r);
+                  return (
+                    <Fragment key={r.id}>
+                      <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
+                        <td className="px-4 py-2">
+                          {r['Callback Priority'] === 'Urgent'
+                            ? <Chip text="Urgent" className="bg-red-600 text-white" />
+                            : r['Callback Priority'] === 'High'
+                            ? <Chip text="High" className="bg-orange-500 text-white" />
+                            : <Chip text="Normal" className="bg-gray-200 text-gray-700" />}
+                        </td>
+                        <td className="px-4 py-2">
+                          <Chip text={r['Callback Due'] || '--'} className="bg-gray-100 text-gray-700" />
+                        </td>
+                        <td className="px-4 py-2"><PhoneNumber number={r['Mobile Number']} /></td>
+                        <td className={`px-4 py-2 text-xs ${gistColor(gist)}`}>{gist}</td>
+                        <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
+                        <td className="px-4 py-2">{fmtDuration(r['Duration Seconds'])}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
+                          <ActionButton label="Done" onClick={() => handleMarkCalled(r)} />
+                        </td>
+                      </tr>
+                      {expanded === key && <ExpandedRow r={r} colSpan={8} />}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
       </div>
 
-      {/* SECTION B: QA Review — Welcome Calls Only */}
+      {/* SECTION: Welcome/Onboarding Calls */}
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="flex items-center gap-2 p-4 pb-2">
-          <h3 className="text-sm font-semibold text-gray-700">QA Review — Welcome Calls</h3>
+          <h3 className="text-sm font-semibold text-gray-700">Welcome / Onboarding Calls</h3>
+          <span className="bg-blue-800 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{welcomeCalls.length}</span>
+          <span className="text-xs text-gray-400 ml-auto">Today only — all welcome calls</span>
+        </div>
+        {welcomeCalls.length === 0 ? (
+          <p className="px-4 py-8 text-center text-gray-400">
+            No Welcome Calls today. Pipeline processed {nonWelcomeStats.outbound} outbound + {nonWelcomeStats.unreachable} unreachable
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
+                  <th className="px-4 py-2">QA</th>
+                  <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Gist</th>
+                  <th className="px-4 py-2">Agent</th>
+                  <th className="px-4 py-2">Time</th>
+                  <th className="px-4 py-2">Duration</th>
+                  <th className="px-4 py-2">Q1-Q6</th>
+                  <th className="px-4 py-2 max-w-[200px]">Summary</th>
+                </tr>
+              </thead>
+              <tbody>
+                {welcomeCalls.map(r => {
+                  const key = `wc-${r.id}`;
+                  return (
+                    <Fragment key={r.id}>
+                      <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
+                        <td className="px-4 py-2"><Chip text={r._qr} className={ratingColor(r._qr)} /></td>
+                        <td className="px-4 py-2"><PhoneNumber number={r['Mobile Number']} /></td>
+                        <td className={`px-4 py-2 text-xs ${gistColor(r._gist)}`}>{r._gist}</td>
+                        <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
+                        <td className="px-4 py-2 whitespace-nowrap">{r['Call Time'] || '--'}</td>
+                        <td className="px-4 py-2">{fmtDuration(r['Duration Seconds'])}</td>
+                        <td className="px-4 py-2">
+                          <div className="flex gap-0.5">
+                            {QA_LABELS.map((q, i) => (
+                              <span key={i} className={`w-4 h-4 rounded-full text-[9px] flex items-center justify-center font-bold ${r[q] ? 'bg-pass text-white' : 'bg-fail text-white'}`}>
+                                {r[q] ? '✓' : '✗'}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                      </tr>
+                      {expanded === key && <ExpandedRow r={r} colSpan={8} />}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* SECTION B: QA Review — Welcome Calls FAIL/AMBER Only */}
+      <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        <div className="flex items-center gap-2 p-4 pb-2">
+          <h3 className="text-sm font-semibold text-gray-700">QA Review — Needs Attention</h3>
           {failCount > 0 && (
             <span className="bg-fail text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{failCount}</span>
           )}
@@ -287,44 +491,46 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Rating</th>
+                  <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Agent</th>
                   <th className="px-4 py-2">Time</th>
-                  <th className="px-4 py-2">Attempt</th>
                   <th className="px-4 py-2">Q1-Q6</th>
                   <th className="px-4 py-2">Failure Reason</th>
-                  <th className="px-4 py-2">Compliance</th>
-                  <th className="px-4 py-2">Summary</th>
+                  <th className="px-4 py-2 max-w-[200px]">Summary</th>
                   <th className="px-4 py-2">Listen</th>
                 </tr>
               </thead>
               <tbody>
-                {qaReview.map(r => (
-                  <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
-                    <td className="px-4 py-2"><Chip text={r._qr} className={ratingColor(r._qr)} /></td>
-                    <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
-                    <td className="px-4 py-2 whitespace-nowrap">{r['Call Time'] || '--'}</td>
-                    <td className="px-4 py-2">{r['Attempt Number'] || '--'}</td>
-                    <td className="px-4 py-2">
-                      <div className="flex gap-1">
-                        {QA_LABELS.map((q, i) => (
-                          <span key={i} className={`w-5 h-5 rounded-full text-[10px] flex items-center justify-center font-bold ${r[q] ? 'bg-pass text-white' : 'bg-fail text-white'}`}>
-                            {r[q] ? '✓' : '✗'}
-                          </span>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="px-4 py-2 text-xs text-fail max-w-[200px]">{r._failReason || '--'}</td>
-                    <td className="px-4 py-2">
-                      {r['Compliance Violation'] && <span className="text-fail text-xs">{r['Compliance Detail'] || 'Violation'}</span>}
-                    </td>
-                    <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
-                    <td className="px-4 py-2">
-                      {r['Recording URL'] ? (
-                        <a href={r['Recording URL']} target="_blank" rel="noopener" className="text-info text-xs underline">Listen</a>
-                      ) : '--'}
-                    </td>
-                  </tr>
-                ))}
+                {qaReview.map(r => {
+                  const key = `qa-${r.id}`;
+                  return (
+                    <Fragment key={r.id}>
+                      <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
+                        <td className="px-4 py-2"><Chip text={r._qr} className={ratingColor(r._qr)} /></td>
+                        <td className={`px-4 py-2 text-xs ${gistColor(r._gist)}`}>{r._gist}</td>
+                        <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
+                        <td className="px-4 py-2 whitespace-nowrap">{r['Call Time'] || '--'}</td>
+                        <td className="px-4 py-2">
+                          <div className="flex gap-1">
+                            {QA_LABELS.map((q, i) => (
+                              <span key={i} className={`w-5 h-5 rounded-full text-[10px] flex items-center justify-center font-bold ${r[q] ? 'bg-pass text-white' : 'bg-fail text-white'}`}>
+                                {r[q] ? '✓' : '✗'}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="px-4 py-2 text-xs text-fail max-w-[200px]">{r._failReason || '--'}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2">
+                          {r['Recording URL'] ? (
+                            <a href={r['Recording URL']} target="_blank" rel="noopener" className="text-info text-xs underline" onClick={e => e.stopPropagation()}>Listen</a>
+                          ) : '--'}
+                        </td>
+                      </tr>
+                      {expanded === key && <ExpandedRow r={r} colSpan={8} />}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>

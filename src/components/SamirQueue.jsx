@@ -1,6 +1,6 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, Fragment } from 'react';
 import { patchRecord } from '../lib/airtable';
-import { truncate, sentimentScoreColor } from '../lib/helpers';
+import { truncate, sentimentScoreColor, fmtDuration, computeGist, gistColor } from '../lib/helpers';
 import PhoneNumber from './PhoneNumber';
 
 function Chip({ text, className }) {
@@ -35,6 +35,43 @@ function ActionButton({ label, onClick, color = 'bg-pass', recordId, doneIds }) 
   );
 }
 
+function ExpandedRow({ r, colSpan }) {
+  return (
+    <tr className="bg-gray-50">
+      <td colSpan={colSpan} className="px-4 py-4">
+        <div className="grid gap-3 text-xs max-w-4xl">
+          {r['Summary'] && (
+            <div>
+              <p className="font-semibold text-gray-600">Summary</p>
+              <p className="text-gray-700">{r['Summary']}</p>
+            </div>
+          )}
+          {r['Transcript'] && (
+            <div>
+              <p className="font-semibold text-gray-600">Transcript</p>
+              <div className="max-h-40 overflow-y-auto bg-white p-2 rounded border text-gray-700 whitespace-pre-wrap">{r['Transcript']}</div>
+            </div>
+          )}
+          {r['Recording URL'] && (
+            <div>
+              <audio controls src={r['Recording URL']} className="h-8 w-full max-w-md" />
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2 text-xs text-gray-500">
+            {r['Call Outcome'] && <span>Outcome: {r['Call Outcome']}</span>}
+            {r['Conversion Signal'] && <span>Signal: {r['Conversion Signal']}</span>}
+            {r['Customer Intent Signal'] && <span>Intent: {r['Customer Intent Signal']}</span>}
+            {r['Customer Objection'] && <span>Objection: {r['Customer Objection']}</span>}
+            {r['Attempt Number'] && <span>Attempt: {r['Attempt Number']}</span>}
+            {r['Days Since Purchase'] != null && <span>Days Since Purchase: {r['Days Since Purchase']}</span>}
+            {r['Bureau Score at Call'] && <span>Bureau: {r['Bureau Score at Call']}</span>}
+          </div>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 function SectionHeader({ title, emoji, count, badgeColor = 'bg-pass' }) {
   return (
     <div className="flex items-center gap-2 p-4 pb-2">
@@ -46,6 +83,9 @@ function SectionHeader({ title, emoji, count, badgeColor = 'bg-pass' }) {
 
 export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested = [], onRemove, onRefresh }) {
   const [doneIds, setDoneIds] = useState(new Set());
+  const [expanded, setExpanded] = useState(null);
+
+  const toggle = (key) => setExpanded(expanded === key ? null : key);
 
   const markDone = (id, action) => {
     setDoneIds(prev => new Set(prev).add(id));
@@ -125,6 +165,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Sentiment</th>
                   <th className="px-4 py-2">Objection</th>
                   <th className="px-4 py-2">Agent</th>
@@ -134,31 +175,39 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                 </tr>
               </thead>
               <tbody>
-                {sortedCallbacksReq.map(r => (
-                  <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
-                    <td className="px-4 py-2">
-                      <PhoneNumber number={r['Mobile Number']} />
-                    </td>
-                    <td className="px-4 py-2">
-                      {r['Customer Sentiment Score'] != null ? (
-                        <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
-                      ) : '--'}
-                    </td>
-                    <td className="px-4 py-2 text-xs">{r['Customer Objection'] || '--'}</td>
-                    <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
-                    <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
-                    <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
-                    <td className="px-4 py-2">
-                      <ActionButton
-                        label="Called Back"
-                        onClick={() => markDone(r.id, () => handleCallbackDone(r))}
-                        color="bg-amber"
-                        recordId={r.id}
-                        doneIds={doneIds}
-                      />
-                    </td>
-                  </tr>
-                ))}
+                {sortedCallbacksReq.map(r => {
+                  const key = `scbr-${r.id}`;
+                  const gist = computeGist(r);
+                  return (
+                    <Fragment key={r.id}>
+                      <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
+                        <td className="px-4 py-2">
+                          <PhoneNumber number={r['Mobile Number']} />
+                        </td>
+                        <td className={`px-4 py-2 text-xs ${gistColor(gist)}`}>{gist}</td>
+                        <td className="px-4 py-2">
+                          {r['Customer Sentiment Score'] != null ? (
+                            <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
+                          ) : '--'}
+                        </td>
+                        <td className="px-4 py-2 text-xs">{r['Customer Objection'] || '--'}</td>
+                        <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
+                          <ActionButton
+                            label="Called Back"
+                            onClick={() => markDone(r.id, () => handleCallbackDone(r))}
+                            color="bg-amber"
+                            recordId={r.id}
+                            doneIds={doneIds}
+                          />
+                        </td>
+                      </tr>
+                      {expanded === key && <ExpandedRow r={r} colSpan={8} />}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -176,6 +225,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Sentiment</th>
                   <th className="px-4 py-2">Conversion Reason</th>
                   <th className="px-4 py-2">Tone</th>
@@ -187,32 +237,40 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                 </tr>
               </thead>
               <tbody>
-                {sortedLeads.map(r => (
-                  <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
-                    <td className="px-4 py-2">
-                      <PhoneNumber number={r['Mobile Number']} />
-                    </td>
-                    <td className="px-4 py-2">
-                      {r['Customer Sentiment Score'] != null ? (
-                        <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
-                      ) : '--'}
-                    </td>
-                    <td className="px-4 py-2 text-xs">{r['Conversion Reason'] || '--'}</td>
-                    <td className="px-4 py-2"><Chip text={r['Customer Tone'] || '--'} className={toneColor(r['Customer Tone'])} /></td>
-                    <td className="px-4 py-2 font-mono">{r['Bureau Score at Call'] || '--'}</td>
-                    <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
-                    <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
-                    <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
-                    <td className="px-4 py-2">
-                      <ActionButton
-                        label="Followed Up"
-                        onClick={() => markDone(r.id, () => handleFollowUp(r))}
-                        recordId={r.id}
-                        doneIds={doneIds}
-                      />
-                    </td>
-                  </tr>
-                ))}
+                {sortedLeads.map(r => {
+                  const key = `shl-${r.id}`;
+                  const gist = computeGist(r);
+                  return (
+                    <Fragment key={r.id}>
+                      <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
+                        <td className="px-4 py-2">
+                          <PhoneNumber number={r['Mobile Number']} />
+                        </td>
+                        <td className={`px-4 py-2 text-xs ${gistColor(gist)}`}>{gist}</td>
+                        <td className="px-4 py-2">
+                          {r['Customer Sentiment Score'] != null ? (
+                            <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
+                          ) : '--'}
+                        </td>
+                        <td className="px-4 py-2 text-xs">{r['Conversion Reason'] || '--'}</td>
+                        <td className="px-4 py-2"><Chip text={r['Customer Tone'] || '--'} className={toneColor(r['Customer Tone'])} /></td>
+                        <td className="px-4 py-2 font-mono">{r['Bureau Score at Call'] || '--'}</td>
+                        <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
+                          <ActionButton
+                            label="Followed Up"
+                            onClick={() => markDone(r.id, () => handleFollowUp(r))}
+                            recordId={r.id}
+                            doneIds={doneIds}
+                          />
+                        </td>
+                      </tr>
+                      {expanded === key && <ExpandedRow r={r} colSpan={10} />}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -230,6 +288,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Sentiment</th>
                   <th className="px-4 py-2">Loan Context</th>
                   <th className="px-4 py-2">Days Since Purchase</th>
@@ -241,33 +300,41 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                 </tr>
               </thead>
               <tbody>
-                {sortedLoans.map(r => (
-                  <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
-                    <td className="px-4 py-2">
-                      <PhoneNumber number={r['Mobile Number']} />
-                    </td>
-                    <td className="px-4 py-2">
-                      {r['Customer Sentiment Score'] != null ? (
-                        <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
-                      ) : '--'}
-                    </td>
-                    <td className="px-4 py-2 text-xs">{r['Loan Context'] || '--'}</td>
-                    <td className="px-4 py-2 font-mono">{r['Days Since Purchase'] ?? '--'}</td>
-                    <td className="px-4 py-2 font-mono">{r['Bureau Score at Call'] || '--'}</td>
-                    <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
-                    <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'}</td>
-                    <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
-                    <td className="px-4 py-2">
-                      <ActionButton
-                        label="Initiate Loan"
-                        onClick={() => markDone(r.id, () => handleLoan(r))}
-                        color="bg-info"
-                        recordId={r.id}
-                        doneIds={doneIds}
-                      />
-                    </td>
-                  </tr>
-                ))}
+                {sortedLoans.map(r => {
+                  const key = `sln-${r.id}`;
+                  const gist = computeGist(r);
+                  return (
+                    <Fragment key={r.id}>
+                      <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
+                        <td className="px-4 py-2">
+                          <PhoneNumber number={r['Mobile Number']} />
+                        </td>
+                        <td className={`px-4 py-2 text-xs ${gistColor(gist)}`}>{gist}</td>
+                        <td className="px-4 py-2">
+                          {r['Customer Sentiment Score'] != null ? (
+                            <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
+                          ) : '--'}
+                        </td>
+                        <td className="px-4 py-2 text-xs">{r['Loan Context'] || '--'}</td>
+                        <td className="px-4 py-2 font-mono">{r['Days Since Purchase'] ?? '--'}</td>
+                        <td className="px-4 py-2 font-mono">{r['Bureau Score at Call'] || '--'}</td>
+                        <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
+                          <ActionButton
+                            label="Initiate Loan"
+                            onClick={() => markDone(r.id, () => handleLoan(r))}
+                            color="bg-info"
+                            recordId={r.id}
+                            doneIds={doneIds}
+                          />
+                        </td>
+                      </tr>
+                      {expanded === key && <ExpandedRow r={r} colSpan={10} />}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -285,6 +352,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Sentiment</th>
                   <th className="px-4 py-2">Churn Reason</th>
                   <th className="px-4 py-2">Sentiment</th>
@@ -298,35 +366,43 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                 </tr>
               </thead>
               <tbody>
-                {sortedChurn.map(r => (
-                  <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
-                    <td className="px-4 py-2">
-                      <PhoneNumber number={r['Mobile Number']} />
-                    </td>
-                    <td className="px-4 py-2">
-                      {r['Customer Sentiment Score'] != null ? (
-                        <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
-                      ) : '--'}
-                    </td>
-                    <td className="px-4 py-2 text-xs">{r['Churn Reason'] || '--'}</td>
-                    <td className="px-4 py-2"><Chip text={r['Sentiment'] || '--'} className={sentimentColor(r['Sentiment'])} /></td>
-                    <td className="px-4 py-2"><Chip text={r['Customer Tone'] || '--'} className={toneColor(r['Customer Tone'])} /></td>
-                    <td className="px-4 py-2 font-mono">{r['Prior Call Attempts'] ?? '--'}</td>
-                    <td className="px-4 py-2 font-mono">{r['Days Since Purchase'] ?? '--'}</td>
-                    <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
-                    <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'}</td>
-                    <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
-                    <td className="px-4 py-2">
-                      <ActionButton
-                        label="Recovered"
-                        onClick={() => markDone(r.id, () => handleRecovered(r))}
-                        color="bg-amber"
-                        recordId={r.id}
-                        doneIds={doneIds}
-                      />
-                    </td>
-                  </tr>
-                ))}
+                {sortedChurn.map(r => {
+                  const key = `scr-${r.id}`;
+                  const gist = computeGist(r);
+                  return (
+                    <Fragment key={r.id}>
+                      <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
+                        <td className="px-4 py-2">
+                          <PhoneNumber number={r['Mobile Number']} />
+                        </td>
+                        <td className={`px-4 py-2 text-xs ${gistColor(gist)}`}>{gist}</td>
+                        <td className="px-4 py-2">
+                          {r['Customer Sentiment Score'] != null ? (
+                            <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
+                          ) : '--'}
+                        </td>
+                        <td className="px-4 py-2 text-xs">{r['Churn Reason'] || '--'}</td>
+                        <td className="px-4 py-2"><Chip text={r['Sentiment'] || '--'} className={sentimentColor(r['Sentiment'])} /></td>
+                        <td className="px-4 py-2"><Chip text={r['Customer Tone'] || '--'} className={toneColor(r['Customer Tone'])} /></td>
+                        <td className="px-4 py-2 font-mono">{r['Prior Call Attempts'] ?? '--'}</td>
+                        <td className="px-4 py-2 font-mono">{r['Days Since Purchase'] ?? '--'}</td>
+                        <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
+                          <ActionButton
+                            label="Recovered"
+                            onClick={() => markDone(r.id, () => handleRecovered(r))}
+                            color="bg-amber"
+                            recordId={r.id}
+                            doneIds={doneIds}
+                          />
+                        </td>
+                      </tr>
+                      {expanded === key && <ExpandedRow r={r} colSpan={12} />}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>

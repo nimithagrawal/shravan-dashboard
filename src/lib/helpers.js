@@ -178,6 +178,71 @@ export function computeQAFailureReason(r) {
 }
 
 /**
+ * Extract 1-2 word gist from a call record for quick scanning.
+ * Uses structured fields first, falls back to summary keyword extraction.
+ */
+export function computeGist(r) {
+  // Structured signals first
+  if (r['Hot Lead']) return 'Hot Lead';
+  if (r['Churn Signal']) return r['Churn Reason'] ? truncate(r['Churn Reason'], 20) : 'Churn Risk';
+  if (r['Loan Signal']) return 'Loan Interest';
+  const intent = r['Customer Intent Signal'];
+  if (intent === 'Rejected') return 'Rejected';
+  if (intent === 'Interested') return 'Interested';
+  if (intent === 'Considering') return 'Considering';
+  // Summary-based extraction
+  const s = (r['Summary'] || '').toLowerCase();
+  if (s.includes('wrong number')) return 'Wrong Number';
+  if (s.includes('not interested') || s.includes('rejected')) return 'Not Interested';
+  if (s.includes('already') && s.includes('activated')) return 'Already Active';
+  if (s.includes('call back') || s.includes('callback') || s.includes('call later')) return 'Call Later';
+  if (s.includes('busy')) return 'Busy';
+  if (s.includes('cashback')) return 'Cashback Query';
+  if (s.includes('complaint') || s.includes('issue')) return 'Complaint';
+  if (s.includes('interested') || s.includes('agreed')) return 'Interested';
+  if (s.includes('loan') || s.includes('emi')) return 'Loan Query';
+  if (s.includes('not reachable') || s.includes('unreachable') || s.includes('switched off')) return 'Unreachable';
+  if (s.includes('voicemail') || s.includes('ivr')) return 'Voicemail';
+  if (s.includes('whatsapp') || s.includes('wa link')) return 'WA Sent';
+  if (s.includes('explained') || s.includes('informed')) return 'Info Given';
+  if (s.includes('no answer') || s.includes('did not answer')) return 'No Answer';
+  // Outcome fallback
+  const outcome = r['Call Outcome'];
+  if (outcome === 'No-Answer') return 'No Answer';
+  if (outcome === 'Dropped') return 'Dropped';
+  if (outcome === 'Completed') return 'Completed';
+  return '--';
+}
+
+export function gistColor(gist) {
+  if (gist === 'Hot Lead' || gist === 'Interested') return 'text-pass font-bold';
+  if (gist === 'Loan Interest' || gist === 'Loan Query') return 'text-purple-600 font-bold';
+  if (gist === 'Rejected' || gist === 'Not Interested' || gist === 'Churn Risk') return 'text-fail';
+  if (gist === 'Call Later' || gist === 'Considering') return 'text-amber';
+  if (gist === 'Complaint') return 'text-fail';
+  return 'text-gray-600';
+}
+
+/**
+ * Extract scheduled callback date/time from summary or Callback Due field.
+ * Returns { date, time, raw } or null.
+ */
+export function extractScheduledCallback(r) {
+  // Check Callback Due field first
+  if (r['Callback Due']) return { raw: r['Callback Due'] };
+  // Try extracting from summary
+  const s = (r['Summary'] || '');
+  // Patterns like "call at 3pm", "call after 5", "call tomorrow", "call on Monday"
+  const timeMatch = s.match(/call(?:ed?)?\s+(?:back\s+)?(?:at|after|around)\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?)/i);
+  if (timeMatch) return { raw: timeMatch[1].trim() };
+  const dayMatch = s.match(/call(?:ed?)?\s+(?:back\s+)?(?:on\s+)?(tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i);
+  if (dayMatch) return { raw: dayMatch[1] };
+  const dateMatch = s.match(/call(?:ed?)?\s+(?:back\s+)?(?:on\s+)?(\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*)/i);
+  if (dateMatch) return { raw: dateMatch[1] };
+  return null;
+}
+
+/**
  * Scrape freshness: green <35m, amber 35-65m, red >65m
  */
 export function scrapeAgeStatus(dateStr) {
