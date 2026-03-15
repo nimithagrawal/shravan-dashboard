@@ -1,4 +1,4 @@
-import { useState, useMemo, Fragment } from 'react';
+import { useState, useMemo, useEffect, Fragment } from 'react';
 import { patchRecord } from '../lib/airtable';
 import { sentimentScoreColor, fmtDuration, computeGist, gistColor, subscriberType, subscriberTypeColor, callLabelColor } from '../lib/helpers';
 import { ExpandableSummary, TranscriptViewer } from './SharedUI';
@@ -57,6 +57,42 @@ function ActionButton({ label, onClick, color = 'bg-pass', recordId, doneIds }) 
   );
 }
 
+function ThreeStateButton({ status, onPickUp, onResolve, color = 'bg-info' }) {
+  if (status === 'Resolved') {
+    return (
+      <span className="px-3 py-1 text-xs font-medium rounded-lg bg-gray-200 text-gray-500 min-h-[44px] md:min-h-0 inline-flex items-center">
+        &#x2713; Resolved
+      </span>
+    );
+  }
+  if (status === 'In Progress') {
+    return (
+      <button
+        onClick={onResolve}
+        className="px-3 py-1 text-xs font-medium rounded-lg bg-pass text-white hover:bg-green-700 active:scale-95 transition-all min-h-[44px] md:min-h-0"
+      >
+        &#x2713; Resolve
+      </button>
+    );
+  }
+  return (
+    <button
+      onClick={onPickUp}
+      className={`px-3 py-1 text-xs font-medium rounded-lg text-white hover:opacity-90 active:scale-95 transition-all min-h-[44px] md:min-h-0 ${color}`}
+    >
+      &#x25B6; Pick Up
+    </button>
+  );
+}
+
+function SLABadge({ handoffTime, urgency }) {
+  if (!handoffTime || urgency !== 'Immediate') return null;
+  const elapsed = (Date.now() - new Date(handoffTime).getTime()) / 60000;
+  if (elapsed > 60) return <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-600 text-white animate-pulse">SLA BREACH</span>;
+  if (elapsed > 30) return <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500 text-white">AT RISK</span>;
+  return null;
+}
+
 function ExpandedRow({ r, colSpan }) {
   const label = r['Call Label'];
   return (
@@ -109,14 +145,47 @@ function SectionHeader({ title, emoji, count, badgeColor = 'bg-pass' }) {
 export default function SamirQueue({ today = [], hotLeads, loans, churn, callbacksRequested = [], transactionIntents = [], onRemove, onRefresh }) {
   const [doneIds, setDoneIds] = useState(new Set());
   const [expanded, setExpanded] = useState(null);
+  const [statusOverrides, setStatusOverrides] = useState({}); // { recordId: 'In Progress' | 'Resolved' }
+  const [resolvedItems, setResolvedItems] = useState([]);
+  const [showResolved, setShowResolved] = useState(false);
+
+  // Live timer — re-render every 60s for elapsed time updates
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick(t => t + 1), 60000);
+    return () => clearInterval(id);
+  }, []);
 
   const toggle = (key) => setExpanded(expanded === key ? null : key);
+
+  const getStatus = (r) => statusOverrides[r.id] || r['Samir Action Status'] || 'New';
 
   const markDone = (id, action) => {
     setDoneIds(prev => new Set(prev).add(id));
     setTimeout(() => {
       action();
     }, 1500);
+  };
+
+  const handlePickUp = async (r) => {
+    try {
+      await patchRecord(r.id, { 'Samir Action Status': 'In Progress' });
+      setStatusOverrides(prev => ({ ...prev, [r.id]: 'In Progress' }));
+    } catch (e) { alert('Failed: ' + e.message); }
+  };
+
+  const handleResolve = async (r, sectionKey, removeFn) => {
+    try {
+      await patchRecord(r.id, {
+        'Samir Action Status': 'Resolved',
+        'Samir Resolved At': new Date().toISOString(),
+      });
+      setStatusOverrides(prev => ({ ...prev, [r.id]: 'Resolved' }));
+      setResolvedItems(prev => [...prev, { ...r, _resolvedAt: new Date() }]);
+      setTimeout(() => {
+        if (removeFn) removeFn();
+      }, 1500);
+    } catch (e) { alert('Failed: ' + e.message); }
   };
 
   // Transaction Signals: exclude Complaints + short calls (<30s) (FIX 5A)
@@ -193,6 +262,8 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
       await patchRecord(r.id, {
         'Transaction Intent': false,
         'Samir Handoff Urgency': 'Normal',
+        'Samir Action Status': 'Resolved',
+        'Samir Resolved At': new Date().toISOString(),
         'Notes': (r['Notes'] || '') + `\nSamir actioned at ${new Date().toLocaleTimeString('en-IN')}`
       });
       onRemove('transactionIntents', r.id);
@@ -201,36 +272,55 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
 
   const handleFollowUp = async (r) => {
     try {
-      await patchRecord(r.id, { 'Hot Lead': false });
+      await patchRecord(r.id, {
+        'Hot Lead': false,
+        'Samir Action Status': 'Resolved',
+        'Samir Resolved At': new Date().toISOString(),
+      });
       onRemove('hotLeads', r.id);
     } catch (e) { alert('Failed: ' + e.message); }
   };
 
   const handleLoan = async (r) => {
     try {
-      await patchRecord(r.id, { 'Loan Signal': false });
+      await patchRecord(r.id, {
+        'Loan Signal': false,
+        'Samir Action Status': 'Resolved',
+        'Samir Resolved At': new Date().toISOString(),
+      });
       onRemove('loans', r.id);
     } catch (e) { alert('Failed: ' + e.message); }
   };
 
   const handleRecovered = async (r) => {
     try {
-      await patchRecord(r.id, { 'Churn Signal': false });
+      await patchRecord(r.id, {
+        'Churn Signal': false,
+        'Samir Action Status': 'Resolved',
+        'Samir Resolved At': new Date().toISOString(),
+      });
       onRemove('churn', r.id);
     } catch (e) { alert('Failed: ' + e.message); }
   };
 
   const handleCallbackDone = async (r) => {
     try {
-      await patchRecord(r.id, { 'Callback Requested': false });
+      await patchRecord(r.id, {
+        'Callback Requested': false,
+        'Samir Action Status': 'Resolved',
+        'Samir Resolved At': new Date().toISOString(),
+      });
       onRemove('callbacksRequested', r.id);
     } catch (e) { alert('Failed: ' + e.message); }
   };
 
   const handleComplaintResolved = async (r) => {
     try {
-      await patchRecord(r.id, { 'Call Label': 'Engaged' });
-      // No onRemove needed — complaints are derived from today[] which is immutable within session
+      await patchRecord(r.id, {
+        'Call Label': 'Engaged',
+        'Samir Action Status': 'Resolved',
+        'Samir Resolved At': new Date().toISOString(),
+      });
     } catch (e) { alert('Failed: ' + e.message); }
   };
 
@@ -239,8 +329,39 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
       <div>
         <h2 className="text-lg font-bold text-gray-900">Samir — Action Queue</h2>
         <p className="text-sm text-gray-500">Transaction Signals · Complaints · Webinar Leads · Loans · Churn · Callbacks</p>
-        <p className="text-[10px] text-gray-400 mt-0.5">Action queues always show today's data</p>
+        <p className="text-[10px] text-gray-400 mt-0.5">Action queues always show today's data · Timer updates every 60s</p>
       </div>
+
+      {/* RESOLVED SUMMARY BAR */}
+      {resolvedItems.length > 0 && (
+        <div className="bg-green-50 border border-green-200 rounded-xl p-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="text-pass text-lg">&#x2713;</span>
+              <p className="text-sm font-semibold text-green-800">
+                {resolvedItems.length} item{resolvedItems.length > 1 ? 's' : ''} resolved this session
+              </p>
+            </div>
+            <button
+              onClick={() => setShowResolved(!showResolved)}
+              className="text-xs text-green-700 hover:underline"
+            >
+              {showResolved ? 'Hide' : 'Show'}
+            </button>
+          </div>
+          {showResolved && (
+            <div className="mt-2 space-y-1">
+              {resolvedItems.map(r => (
+                <div key={r.id} className="flex items-center gap-2 text-xs text-green-700">
+                  <span className="text-gray-400">{r._resolvedAt.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}</span>
+                  <PhoneNumber number={r['Mobile Number']} />
+                  <span className="text-gray-500">{r['Samir Action Type'] || r['Call Label'] || '--'}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* TRANSACTION SIGNALS — customer-initiated health/medical intent */}
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
@@ -292,7 +413,10 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                         <td className="px-4 py-2">
                           {r['Samir Handoff Urgency'] ? (
                             <div>
-                              <Chip text={r['Samir Handoff Urgency']} className={urgencyColor(r['Samir Handoff Urgency'])} />
+                              <div className="flex items-center gap-1">
+                                <Chip text={r['Samir Handoff Urgency']} className={urgencyColor(r['Samir Handoff Urgency'])} />
+                                <SLABadge handoffTime={r['Samir Handoff Time']} urgency={r['Samir Handoff Urgency']} />
+                              </div>
                               {r['Samir Handoff Time'] && (
                                 <p className={`text-[10px] mt-0.5 ${r['Samir Handoff Urgency'] === 'Immediate' && elapsedSinceHandoff(r['Samir Handoff Time'])?.includes('h') ? 'text-red-600 font-bold' : 'text-gray-400'}`}>
                                   {elapsedSinceHandoff(r['Samir Handoff Time']) || ''}
@@ -311,12 +435,13 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                         <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ActionButton
-                            label="Initiate Outreach"
-                            onClick={() => markDone(r.id, () => handleTransactionDone(r))}
+                          <ThreeStateButton
+                            status={getStatus(r)}
+                            onPickUp={() => handlePickUp(r)}
+                            onResolve={() => handleResolve(r, 'transactionIntents', () => {
+                              markDone(r.id, () => handleTransactionDone(r));
+                            })}
                             color="bg-red-600"
-                            recordId={r.id}
-                            doneIds={doneIds}
                           />
                         </td>
                       </tr>
@@ -367,12 +492,15 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                         <td className="px-4 py-2 text-xs">{r['Customer Objection'] || r['Churn Reason'] || '--'}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ActionButton
-                            label="Resolved"
-                            onClick={() => markDone(r.id, () => handleComplaintResolved(r))}
+                          <ThreeStateButton
+                            status={getStatus(r)}
+                            onPickUp={() => handlePickUp(r)}
+                            onResolve={() => {
+                              setResolvedItems(prev => [...prev, { ...r, _resolvedAt: new Date() }]);
+                              handleComplaintResolved(r);
+                              setStatusOverrides(prev => ({ ...prev, [r.id]: 'Resolved' }));
+                            }}
                             color="bg-fail"
-                            recordId={r.id}
-                            doneIds={doneIds}
                           />
                         </td>
                       </tr>
@@ -436,11 +564,13 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                         <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ActionButton
-                            label="Followed Up"
-                            onClick={() => markDone(r.id, () => handleFollowUp(r))}
-                            recordId={r.id}
-                            doneIds={doneIds}
+                          <ThreeStateButton
+                            status={getStatus(r)}
+                            onPickUp={() => handlePickUp(r)}
+                            onResolve={() => handleResolve(r, 'hotLeads', () => {
+                              markDone(r.id, () => handleFollowUp(r));
+                            })}
+                            color="bg-pass"
                           />
                         </td>
                       </tr>
@@ -504,12 +634,13 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                         <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ActionButton
-                            label="Initiate Loan"
-                            onClick={() => markDone(r.id, () => handleLoan(r))}
+                          <ThreeStateButton
+                            status={getStatus(r)}
+                            onPickUp={() => handlePickUp(r)}
+                            onResolve={() => handleResolve(r, 'loans', () => {
+                              markDone(r.id, () => handleLoan(r));
+                            })}
                             color="bg-info"
-                            recordId={r.id}
-                            doneIds={doneIds}
                           />
                         </td>
                       </tr>
@@ -577,12 +708,13 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                         <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ActionButton
-                            label="Recovered"
-                            onClick={() => markDone(r.id, () => handleRecovered(r))}
+                          <ThreeStateButton
+                            status={getStatus(r)}
+                            onPickUp={() => handlePickUp(r)}
+                            onResolve={() => handleResolve(r, 'churn', () => {
+                              markDone(r.id, () => handleRecovered(r));
+                            })}
                             color="bg-amber"
-                            recordId={r.id}
-                            doneIds={doneIds}
                           />
                         </td>
                       </tr>
@@ -642,12 +774,13 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                         <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ActionButton
-                            label="Called Back"
-                            onClick={() => markDone(r.id, () => handleCallbackDone(r))}
+                          <ThreeStateButton
+                            status={getStatus(r)}
+                            onPickUp={() => handlePickUp(r)}
+                            onResolve={() => handleResolve(r, 'callbacksRequested', () => {
+                              markDone(r.id, () => handleCallbackDone(r));
+                            })}
                             color="bg-amber"
-                            recordId={r.id}
-                            doneIds={doneIds}
                           />
                         </td>
                       </tr>

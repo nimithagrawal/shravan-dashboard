@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { fetchTodayWithProgress, fetchRecordsForPeriod, fetchCallbacks, fetchHotLeads, fetchLoanSignals, fetchChurnSignals, fetchCallbacksRequested, fetchTransactionIntents, invalidateCache, getLastScrapedTime } from './lib/airtable';
+import { fetchTodayWithProgress, fetchRecordsForPeriod, fetchOpenCallbacks, fetchHotLeads, fetchLoanSignals, fetchChurnSignals, fetchCallbacksRequested, fetchTransactionIntents, invalidateCache, getLastScrapedTime } from './lib/airtable';
 import { scrapeAgeStatus, getPeriodDates, getPreviousPeriodDates, formatPeriodLabel } from './lib/helpers';
 import Overview from './components/Overview';
 import VikasQueue from './components/VikasQueue';
@@ -19,7 +19,7 @@ const PERIODS = [
 
 export default function App() {
   const [tab, setTab] = useState(0);
-  const [data, setData] = useState({ today: [], callbacks: [], hotLeads: [], loans: [], churn: [], callbacksRequested: [], transactionIntents: [] });
+  const [data, setData] = useState({ today: [], openCallbacks: [], hotLeads: [], loans: [], churn: [], callbacksRequested: [], transactionIntents: [] });
   const [loading, setLoading] = useState(true);
   const [loadProgress, setLoadProgress] = useState(0);
   const [lastRefresh, setLastRefresh] = useState(null);
@@ -40,14 +40,14 @@ export default function App() {
     try {
       if (force) invalidateCache();
       setLoadProgress(0);
-      const [today, callbacks, hotLeads, loans, churn, callbacksRequested, transactionIntents] = await Promise.all([
+      const [today, openCallbacks, hotLeads, loans, churn, callbacksRequested, transactionIntents] = await Promise.all([
         fetchTodayWithProgress(({ loaded }) => setLoadProgress(loaded)),
-        fetchCallbacks(),
+        fetchOpenCallbacks(),
         fetchHotLeads(), fetchLoanSignals(), fetchChurnSignals(),
         fetchCallbacksRequested(),
         fetchTransactionIntents(),
       ]);
-      setData({ today, callbacks, hotLeads, loans, churn, callbacksRequested, transactionIntents });
+      setData({ today, openCallbacks, hotLeads, loans, churn, callbacksRequested, transactionIntents });
       setLastRefresh(new Date());
       setLastScraped(getLastScrapedTime(today));
       // If period is "today", use the same data
@@ -239,7 +239,7 @@ export default function App() {
                 />
               )
             )}
-            {tab === 1 && <VikasQueue today={data.today} callbacks={data.callbacks} callbacksRequested={data.callbacksRequested} onRemove={removeRecord} onRefresh={refresh} />}
+            {tab === 1 && <VikasQueue today={data.today} openCallbacks={data.openCallbacks} onRemove={removeRecord} onRefresh={refresh} />}
             {tab === 2 && <SamirQueue today={data.today} hotLeads={data.hotLeads} loans={data.loans} churn={data.churn} callbacksRequested={data.callbacksRequested} transactionIntents={data.transactionIntents} onRemove={removeRecord} onRefresh={refresh} />}
           </>
         )}

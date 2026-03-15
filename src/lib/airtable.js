@@ -118,6 +118,10 @@ export async function fetchTransactionIntents() {
   return fetchCached('transactionIntents', '{Transaction Intent}=1');
 }
 
+export async function fetchOpenCallbacks() {
+  return fetchCached('openCallbacks', "AND(OR({Callback Status}='Scheduled',{Callback Status}='Overdue',{Callback Status}='Attempted',{Callback Status}='Escalated'),OR({Needs Callback}=1,{Callback Requested}=1))");
+}
+
 // ── Fetch records for arbitrary date range ──
 export async function fetchRecordsForPeriod(startDate, endDate, onProgress = null) {
   const cacheKey = `period_${startDate}_${endDate}`;
