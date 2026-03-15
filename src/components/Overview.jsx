@@ -5,7 +5,7 @@ import {
   sentimentDotColor, sentimentScoreColor, conversionSignalColor,
   callCategoryColor, callLabelColor,
   computeCallTag, callTagColor, isHumanPickup, isConnectedCall,
-  truncate, maskPhone, intentChipColor,
+  maskPhone, intentChipColor,
   fmtTalkTime, fmtAvgTalkTime,
   subscriberType, subscriberTypeColor, pitchQualityIssue,
   extractScheduledCallback, formatCallbackDue, callbackDueColor,
@@ -824,6 +824,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
                   <th className="px-3 py-1.5">Mobile</th>
                   <th className="px-3 py-1.5">Agent</th>
                   <th className="px-3 py-1.5">Call Date</th>
+                  <th className="px-3 py-1.5">Label</th>
                   <th className="px-3 py-1.5">Summary</th>
                 </tr>
               </thead>
@@ -840,7 +841,8 @@ export default function Overview({ records, prevRecords = [], period, periodStar
                       <td className="px-3 py-1.5 whitespace-nowrap">
                         {r['Call Date'] ? new Date(r['Call Date'] + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '--'}
                       </td>
-                      <td className="px-3 py-1.5 text-gray-500 max-w-[200px]">{truncate(r['Summary'], 60)}</td>
+                      <td className="px-3 py-1.5">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
+                      <td className="px-3 py-1.5 text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} limit={60} /></td>
                     </tr>
                   ))
                 )}
@@ -1064,13 +1066,14 @@ export default function Overview({ records, prevRecords = [], period, periodStar
                 <th className="px-4 py-2">Sent.</th>
                 <th className="px-4 py-2">Category</th>
                 <th className="px-4 py-2">CB Due</th>
+                <th className="px-4 py-2">QA</th>
                 <th className="px-4 py-2">Label</th>
                 <th className="px-4 py-2">Summary</th>
               </tr>
             </thead>
             <tbody>
               {visible.length === 0 && (
-                <tr><td colSpan={isMultiDay ? 13 : 12} className="px-4 py-8 text-center text-gray-400">No calls match your filters</td></tr>
+                <tr><td colSpan={isMultiDay ? 14 : 13} className="px-4 py-8 text-center text-gray-400">No calls match your filters</td></tr>
               )}
               {visible.map((r, i) => (
                 <React.Fragment key={r.id || i}>
@@ -1109,6 +1112,11 @@ export default function Overview({ records, prevRecords = [], period, periodStar
                       ) : <span className="text-gray-300">--</span>}
                     </td>
                     <td className="px-4 py-2">
+                      {r._qs > 0 ? (
+                        <span className={`font-mono text-xs font-bold ${r._qr === 'PASS' ? 'text-pass' : r._qr === 'AMBER' ? 'text-amber' : 'text-fail'}`}>{r._qs}/6</span>
+                      ) : <span className="text-gray-300">--</span>}
+                    </td>
+                    <td className="px-4 py-2">
                       {r['Call Label'] ? (
                         <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} />
                       ) : <span className="text-gray-300">--</span>}
@@ -1117,7 +1125,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
                   </tr>
                   {expanded === i && (
                     <tr className="bg-gray-50">
-                      <td colSpan={isMultiDay ? 13 : 12} className="px-4 py-4">
+                      <td colSpan={isMultiDay ? 14 : 13} className="px-4 py-4">
                         <div className="grid gap-3 text-xs max-w-4xl">
                           <div className="flex flex-wrap gap-4 items-center">
                             {r['Call Label'] && <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} />}

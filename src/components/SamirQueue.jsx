@@ -192,6 +192,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                   <th className="px-4 py-2">What They Said</th>
                   <th className="px-4 py-2">Medical Context</th>
                   <th className="px-4 py-2">Sentiment</th>
+                  <th className="px-4 py-2">Label</th>
                   <th className="px-4 py-2 max-w-[200px]">Summary</th>
                   <th className="px-4 py-2"></th>
                 </tr>
@@ -214,6 +215,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                             <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
                           ) : '--'}
                         </td>
+                        <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
                           <ActionButton
@@ -225,7 +227,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                           />
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={8} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={9} />}
                     </Fragment>
                   );
                 })}
@@ -254,6 +256,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                   <th className="px-4 py-2">Bureau</th>
                   <th className="px-4 py-2">Agent</th>
                   <th className="px-4 py-2">Date</th>
+                  <th className="px-4 py-2">Label</th>
                   <th className="px-4 py-2 max-w-[200px]">Summary</th>
                   <th className="px-4 py-2"></th>
                 </tr>
@@ -281,6 +284,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                         <td className="px-4 py-2 font-mono">{r['Bureau Score at Call'] || '--'}</td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                         <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
+                        <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
                           <ActionButton
@@ -291,7 +295,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                           />
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={11} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={12} />}
                     </Fragment>
                   );
                 })}
@@ -320,6 +324,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                   <th className="px-4 py-2">Bureau</th>
                   <th className="px-4 py-2">Agent</th>
                   <th className="px-4 py-2">Date</th>
+                  <th className="px-4 py-2">Label</th>
                   <th className="px-4 py-2 max-w-[200px]">Summary</th>
                   <th className="px-4 py-2"></th>
                 </tr>
@@ -347,6 +352,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                         <td className="px-4 py-2 font-mono">{r['Bureau Score at Call'] || '--'}</td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                         <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'}</td>
+                        <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
                           <ActionButton
@@ -358,7 +364,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                           />
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={11} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={12} />}
                     </Fragment>
                   );
                 })}
@@ -389,6 +395,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                   <th className="px-4 py-2">Days Since Purchase</th>
                   <th className="px-4 py-2">Agent</th>
                   <th className="px-4 py-2">Date</th>
+                  <th className="px-4 py-2">Label</th>
                   <th className="px-4 py-2 max-w-[200px]">Summary</th>
                   <th className="px-4 py-2"></th>
                 </tr>
@@ -418,6 +425,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                         <td className="px-4 py-2 font-mono">{r['Days Since Purchase'] ?? '--'}</td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                         <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'}</td>
+                        <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
                           <ActionButton
@@ -429,7 +437,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                           />
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={13} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={14} />}
                     </Fragment>
                   );
                 })}
@@ -456,6 +464,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                   <th className="px-4 py-2">Objection</th>
                   <th className="px-4 py-2">Agent</th>
                   <th className="px-4 py-2">Date</th>
+                  <th className="px-4 py-2">Label</th>
                   <th className="px-4 py-2 max-w-[200px]">Summary</th>
                   <th className="px-4 py-2"></th>
                 </tr>
@@ -481,6 +490,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                         <td className="px-4 py-2 text-xs">{r['Customer Objection'] || '--'}</td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                         <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
+                        <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
                           <ActionButton
@@ -492,7 +502,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                           />
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={9} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={10} />}
                     </Fragment>
                   );
                 })}

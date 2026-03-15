@@ -286,6 +286,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                   <th className="px-4 py-2">Agent</th>
                   <th className="px-4 py-2">Time</th>
                   <th className="px-4 py-2">Duration</th>
+                  <th className="px-4 py-2">Label</th>
                   <th className="px-4 py-2 max-w-[200px]">Summary</th>
                   <th className="px-4 py-2"></th>
                 </tr>
@@ -304,12 +305,13 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                         <td className="px-4 py-2 whitespace-nowrap">{r['Call Time'] || '--'}</td>
                         <td className="px-4 py-2">{fmtDuration(r['Duration Seconds'])}</td>
+                        <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
                           <ActionButton label="Done" onClick={() => handleCallbackReqDone(r)} />
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={8} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={9} />}
                     </Fragment>
                   );
                 })}
@@ -357,12 +359,13 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                   <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Agent</th>
                   <th className="px-4 py-2">Call Date</th>
+                  <th className="px-4 py-2">Label</th>
                   <th className="px-4 py-2 max-w-[200px]">Summary</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredScheduled.length === 0 && (
-                  <tr><td colSpan={7} className="px-4 py-6 text-center text-gray-400 text-xs">No scheduled callbacks match your filter</td></tr>
+                  <tr><td colSpan={8} className="px-4 py-6 text-center text-gray-400 text-xs">No scheduled callbacks match your filter</td></tr>
                 )}
                 {filteredScheduled.map(r => {
                   const key = `sch-${r.id}`;
@@ -379,9 +382,10 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                         <td className="px-4 py-2 whitespace-nowrap text-xs">
                           {r['Call Date'] ? new Date(r['Call Date'] + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '--'}
                         </td>
+                        <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={7} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={8} />}
                     </Fragment>
                   );
                 })}
@@ -412,6 +416,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                   <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Agent</th>
                   <th className="px-4 py-2">Duration</th>
+                  <th className="px-4 py-2">Label</th>
                   <th className="px-4 py-2 max-w-[200px]">Summary</th>
                   <th className="px-4 py-2"></th>
                 </tr>
@@ -437,12 +442,13 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                         <td className={`px-4 py-2 text-xs ${gistColor(gist)}`}>{gist}</td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                         <td className="px-4 py-2">{fmtDuration(r['Duration Seconds'])}</td>
+                        <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
                           <ActionButton label="Done" onClick={() => handleMarkCalled(r)} />
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={8} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={9} />}
                     </Fragment>
                   );
                 })}
@@ -476,6 +482,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                   <th className="px-4 py-2">Time</th>
                   <th className="px-4 py-2">Duration</th>
                   <th className="px-4 py-2">Q1-Q6</th>
+                  <th className="px-4 py-2">Label</th>
                   <th className="px-4 py-2 max-w-[200px]">Summary</th>
                 </tr>
               </thead>
@@ -502,9 +509,10 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                             ))}
                           </div>
                         </td>
+                        <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={9} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={10} />}
                     </Fragment>
                   );
                 })}
