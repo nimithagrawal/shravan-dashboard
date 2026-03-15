@@ -225,21 +225,154 @@ export function gistColor(gist) {
 
 /**
  * Extract scheduled callback date/time from summary or Callback Due field.
- * Returns { date, time, raw } or null.
+ * Returns { raw, resolvedDate (YYYY-MM-DD), resolvedTime } or null.
+ *
+ * IMPORTANT: Ignores system-generated retry flags like "Next-Day", "Same-Day".
+ * Only returns a result when a customer explicitly requested a callback.
+ *
+ * resolvedDate is computed from the Call Date + relative references (tomorrow, Monday, etc.)
  */
 export function extractScheduledCallback(r) {
-  // Check Callback Due field first
-  if (r['Callback Due']) return { raw: r['Callback Due'] };
-  // Try extracting from summary
+  const callDate = r['Call Date']; // YYYY-MM-DD
+
+  // 1. Check Callback Due field — only if it's a real date, not a system retry tag
+  if (r['Callback Due']) {
+    const due = r['Callback Due'];
+    // Skip system-generated values
+    const systemTags = ['next-day', 'same-day', 'next day', 'same day', 'retry', 'auto'];
+    if (!systemTags.includes(due.toLowerCase().trim())) {
+      const d = new Date(due);
+      const resolved = !isNaN(d.getTime()) ? fmtDate(d) : null;
+      return { raw: due, resolvedDate: resolved, resolvedTime: null };
+    }
+  }
+
   const s = (r['Summary'] || '');
-  // Patterns like "call at 3pm", "call after 5", "call tomorrow", "call on Monday"
-  const timeMatch = s.match(/call(?:ed?)?\s+(?:back\s+)?(?:at|after|around)\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM)?)/i);
-  if (timeMatch) return { raw: timeMatch[1].trim() };
-  const dayMatch = s.match(/call(?:ed?)?\s+(?:back\s+)?(?:on\s+)?(tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i);
-  if (dayMatch) return { raw: dayMatch[1] };
-  const dateMatch = s.match(/call(?:ed?)?\s+(?:back\s+)?(?:on\s+)?(\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*)/i);
-  if (dateMatch) return { raw: dateMatch[1] };
+
+  // 2. Time patterns: "call back after 5 PM", "requested callback at 3pm"
+  //    IMPORTANT: Require "back" or "callback" to avoid matching "cancelled the call after 27 seconds"
+  //    Also require AM/PM or time > 0 to avoid matching durations
+  const timePatterns = [
+    /(?:call\s+back\s+(?:at|after|around|by)\s+)(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM))/i,
+    /(?:callback\s+(?:at|after|around|by)\s+)(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM))/i,
+    /(?:request(?:ed|s)?\s+(?:a\s+)?call\s*back?\s+(?:at|after|around|by)\s+)(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM))/i,
+    /(?:(?:asked|wants?|preferred?|suggested?)\s+(?:to\s+)?(?:call(?:\s+back)?|callback)\s+(?:at|after|around|by)\s+)(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM))/i,
+    /(?:(?:call|ring)\s+(?:me\s+)?back\s+(?:post|after)\s+)(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM))/i,
+    // Without AM/PM but with "back" required and hours in reasonable range
+    /(?:call\s+back\s+(?:at|after|around)\s+)(\d{1,2})(?:\s|,|\.)/i,
+    /(?:callback\s+(?:at|after|around)\s+)(\d{1,2})(?:\s|,|\.)/i,
+  ];
+  for (const re of timePatterns) {
+    const m = s.match(re);
+    if (m) {
+      const timeVal = m[1].trim();
+      // Validate: skip if it looks like a duration (seconds/minutes)
+      const afterMatch = s.slice(m.index).toLowerCase();
+      if (afterMatch.includes('second') || afterMatch.includes('minute')) continue;
+      return { raw: timeVal, resolvedDate: callDate || null, resolvedTime: timeVal };
+    }
+  }
+
+  // 3. Day patterns: "call back tomorrow", "callback on Monday"
+  const dayPatterns = [
+    /(?:call\s+back\s+(?:on\s+)?)(tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i,
+    /(?:callback\s+(?:on\s+)?)(tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i,
+    /(?:request(?:ed|s)?\s+(?:a\s+)?call\s*back?\s+(?:on\s+)?)(tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i,
+    /(?:(?:asked|wants?|preferred?)\s+(?:to\s+)?(?:call(?:\s+back)|callback)\s+(?:on\s+)?)(tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)/i,
+  ];
+  for (const re of dayPatterns) {
+    const m = s.match(re);
+    if (m) {
+      const resolved = resolveRelativeDay(m[1].toLowerCase(), callDate);
+      return { raw: m[1], resolvedDate: resolved, resolvedTime: null };
+    }
+  }
+
+  // 4. Date patterns: "call back on 15th Jan", "callback on March 20"
+  const dateMatch = s.match(/(?:call(?:\s+back)|callback)\s+(?:on\s+)?(\d{1,2}(?:st|nd|rd|th)?\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*)/i);
+  if (dateMatch) {
+    const resolved = resolveAbsoluteDate(dateMatch[1]);
+    return { raw: dateMatch[1], resolvedDate: resolved, resolvedTime: null };
+  }
+
+  // 5. AI-detected callback (Callback Requested flag) + summary mentions busy/callback
+  //    Only if Callback Requested is true (AI-detected, not system retry)
+  if (r['Callback Requested']) {
+    // Try to extract a time from the summary even without strict "call back" prefix
+    const looseTime = s.match(/(?:after|around|by|post)\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm|AM|PM))/i);
+    if (looseTime) {
+      return { raw: looseTime[1].trim(), resolvedDate: callDate || null, resolvedTime: looseTime[1].trim() };
+    }
+    // Fallback: callback requested but no specific time
+    return { raw: 'Callback requested', resolvedDate: callDate || null, resolvedTime: null };
+  }
+
   return null;
+}
+
+/** Resolve 'tomorrow', 'monday', etc. relative to a call date (YYYY-MM-DD) */
+function resolveRelativeDay(day, callDate) {
+  if (!callDate) return null;
+  const base = new Date(callDate + 'T00:00:00');
+  if (day === 'tomorrow') return fmtDate(addDays(base, 1));
+  const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  const targetDow = dayNames.indexOf(day);
+  if (targetDow === -1) return null;
+  const currentDow = base.getDay();
+  let diff = targetDow - currentDow;
+  if (diff <= 0) diff += 7; // next occurrence
+  return fmtDate(addDays(base, diff));
+}
+
+/** Resolve "15th Jan", "March 20" to YYYY-MM-DD (using current year) */
+function resolveAbsoluteDate(raw) {
+  const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+  const m = raw.match(/(\d{1,2})(?:st|nd|rd|th)?\s*(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i);
+  if (!m) return null;
+  const day = parseInt(m[1], 10);
+  const month = months[m[2].toLowerCase().slice(0, 3)];
+  if (month == null || day < 1 || day > 31) return null;
+  const year = new Date().getFullYear();
+  return fmtDate(new Date(year, month, day));
+}
+
+/**
+ * Format callback display text: "Today 5 PM", "17 Mar", "Tomorrow" etc.
+ */
+export function formatCallbackDue(cb) {
+  if (!cb) return null;
+  const parts = [];
+  if (cb.resolvedDate) {
+    const today = fmtDate(todayIST());
+    const tomorrow = fmtDate(addDays(todayIST(), 1));
+    if (cb.resolvedDate === today) parts.push('Today');
+    else if (cb.resolvedDate === tomorrow) parts.push('Tomorrow');
+    else {
+      const d = new Date(cb.resolvedDate + 'T00:00:00');
+      parts.push(d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }));
+    }
+  }
+  if (cb.resolvedTime) parts.push(cb.resolvedTime);
+  if (parts.length === 0) return cb.raw || 'Callback';
+  return parts.join(' ');
+}
+
+/**
+ * Check if a callback is due on a specific date (YYYY-MM-DD) or date range
+ */
+export function isCallbackDueOn(cb, dateStr) {
+  if (!cb || !cb.resolvedDate) return false;
+  return cb.resolvedDate === dateStr;
+}
+
+export function callbackDueColor(cb) {
+  if (!cb || !cb.resolvedDate) return 'bg-gray-100 text-gray-600';
+  const today = fmtDate(todayIST());
+  const tomorrow = fmtDate(addDays(todayIST(), 1));
+  if (cb.resolvedDate < today) return 'bg-red-100 text-red-700'; // Overdue
+  if (cb.resolvedDate === today) return 'bg-amber/20 text-amber'; // Due today
+  if (cb.resolvedDate === tomorrow) return 'bg-blue-100 text-blue-700'; // Tomorrow
+  return 'bg-gray-100 text-gray-600'; // Future
 }
 
 /**

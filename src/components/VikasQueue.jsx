@@ -1,6 +1,6 @@
 import { useState, useMemo, Fragment } from 'react';
 import { patchRecord } from '../lib/airtable';
-import { qaScore, qaRating, fmtDuration, ratingColor, truncate, computeQAFailureReason, isHumanPickup, kpiColor, computeGist, gistColor, extractScheduledCallback, subscriberType, subscriberTypeColor } from '../lib/helpers';
+import { qaScore, qaRating, fmtDuration, ratingColor, truncate, computeQAFailureReason, isHumanPickup, kpiColor, computeGist, gistColor, extractScheduledCallback, formatCallbackDue, callbackDueColor, subscriberType, subscriberTypeColor } from '../lib/helpers';
 import PhoneNumber from './PhoneNumber';
 
 function Chip({ text, className }) {
@@ -70,6 +70,7 @@ function ExpandedRow({ r, colSpan }) {
 export default function VikasQueue({ today, callbacks, callbacksRequested = [], onRemove, onRefresh }) {
   const [expanded, setExpanded] = useState(null);
   const [filterScheduledDate, setFilterScheduledDate] = useState('');
+  const [filterScheduledGroup, setFilterScheduledGroup] = useState('');
 
   const toggle = (key) => setExpanded(expanded === key ? null : key);
 
@@ -165,13 +166,27 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
   }, [today]);
 
   const filteredScheduled = useMemo(() => {
-    if (!filterScheduledDate) return scheduledCallbacks;
-    return scheduledCallbacks.filter(r => {
-      const raw = (r._scheduled.raw || '').toLowerCase();
+    let rows = scheduledCallbacks;
+    if (filterScheduledGroup) {
+      const now = new Date();
+      const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      const tmr = new Date(now); tmr.setDate(tmr.getDate() + 1);
+      const tmrStr = `${tmr.getFullYear()}-${String(tmr.getMonth() + 1).padStart(2, '0')}-${String(tmr.getDate()).padStart(2, '0')}`;
+      if (filterScheduledGroup === 'overdue') rows = rows.filter(r => r._scheduled.resolvedDate && r._scheduled.resolvedDate < todayStr);
+      else if (filterScheduledGroup === 'today') rows = rows.filter(r => r._scheduled.resolvedDate === todayStr);
+      else if (filterScheduledGroup === 'tomorrow') rows = rows.filter(r => r._scheduled.resolvedDate === tmrStr);
+      else if (filterScheduledGroup === 'future') rows = rows.filter(r => r._scheduled.resolvedDate && r._scheduled.resolvedDate > tmrStr);
+      else if (filterScheduledGroup === 'no_date') rows = rows.filter(r => !r._scheduled.resolvedDate);
+    }
+    if (filterScheduledDate) {
       const filter = filterScheduledDate.toLowerCase();
-      return raw.includes(filter);
-    });
-  }, [scheduledCallbacks, filterScheduledDate]);
+      rows = rows.filter(r => {
+        const raw = (r._scheduled.raw || '').toLowerCase();
+        return raw.includes(filter);
+      });
+    }
+    return rows;
+  }, [scheduledCallbacks, filterScheduledDate, filterScheduledGroup]);
 
   // SECTION: Welcome/Onboarding Calls — all welcome calls for today
   const welcomeCalls = useMemo(() => {
@@ -303,16 +318,28 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
       {/* Scheduled Callbacks — customer asked to call at specific date/time */}
       {scheduledCallbacks.length > 0 && (
         <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-          <div className="flex items-center gap-2 p-4 pb-2">
+          <div className="flex items-center gap-2 p-4 pb-2 flex-wrap">
             <h3 className="text-sm font-semibold text-gray-700">Scheduled Callbacks</h3>
             <span className="bg-info text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{scheduledCallbacks.length}</span>
-            <div className="ml-auto">
+            <div className="ml-auto flex items-center gap-2">
+              <select
+                value={filterScheduledGroup}
+                onChange={(e) => setFilterScheduledGroup(e.target.value)}
+                className="px-2 py-1 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-info"
+              >
+                <option value="">All Dates</option>
+                <option value="overdue">Overdue</option>
+                <option value="today">Due Today</option>
+                <option value="tomorrow">Due Tomorrow</option>
+                <option value="future">Future</option>
+                <option value="no_date">No Date</option>
+              </select>
               <input
                 type="text"
                 value={filterScheduledDate}
                 onChange={(e) => setFilterScheduledDate(e.target.value)}
-                placeholder="Filter by date/time..."
-                className="px-2 py-1 text-xs border border-gray-200 rounded-lg w-36 focus:outline-none focus:border-info"
+                placeholder="Search..."
+                className="px-2 py-1 text-xs border border-gray-200 rounded-lg w-28 focus:outline-none focus:border-info"
               />
             </div>
           </div>
@@ -321,14 +348,18 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Mobile</th>
-                  <th className="px-4 py-2">Requested Time</th>
+                  <th className="px-4 py-2">CB Due</th>
+                  <th className="px-4 py-2">Time</th>
                   <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Agent</th>
-                  <th className="px-4 py-2">Call Time</th>
+                  <th className="px-4 py-2">Call Date</th>
                   <th className="px-4 py-2 max-w-[200px]">Summary</th>
                 </tr>
               </thead>
               <tbody>
+                {filteredScheduled.length === 0 && (
+                  <tr><td colSpan={7} className="px-4 py-6 text-center text-gray-400 text-xs">No scheduled callbacks match your filter</td></tr>
+                )}
                 {filteredScheduled.map(r => {
                   const key = `sch-${r.id}`;
                   return (
@@ -336,14 +367,17 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                       <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
                         <td className="px-4 py-2"><PhoneNumber number={r['Mobile Number']} /></td>
                         <td className="px-4 py-2">
-                          <Chip text={r._scheduled.raw} className="bg-blue-100 text-blue-700" />
+                          <Chip text={formatCallbackDue(r._scheduled)} className={callbackDueColor(r._scheduled)} />
                         </td>
+                        <td className="px-4 py-2 text-xs font-mono">{r._scheduled.resolvedTime || '--'}</td>
                         <td className={`px-4 py-2 text-xs ${gistColor(r._gist)}`}>{r._gist}</td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
-                        <td className="px-4 py-2 whitespace-nowrap">{r['Call Time'] || '--'}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-xs">
+                          {r['Call Date'] ? new Date(r['Call Date'] + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '--'}
+                        </td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={6} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={7} />}
                     </Fragment>
                   );
                 })}

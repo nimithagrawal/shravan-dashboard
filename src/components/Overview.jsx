@@ -8,6 +8,7 @@ import {
   truncate, maskPhone, intentChipColor,
   fmtTalkTime, fmtAvgTalkTime,
   subscriberType, subscriberTypeColor, pitchQualityIssue,
+  extractScheduledCallback, formatCallbackDue, callbackDueColor,
 } from '../lib/helpers';
 import PhoneNumber from './PhoneNumber';
 
@@ -50,6 +51,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
   const [sortField, setSortField] = useState('time');
   const [sortDir, setSortDir] = useState('desc');
   const [filterTimeRange, setFilterTimeRange] = useState('');
+  const [filterCallbackDue, setFilterCallbackDue] = useState('');
 
   const effectiveAgentFilter = agentFilter || filterAgent;
   const isToday = period === 'today';
@@ -65,6 +67,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
       _human: isHumanPickup(r),
       _connected: isConnectedCall(r),
       _subType: subscriberType(r),
+      _callbackWhen: extractScheduledCallback(r),
     })),
     [records]
   );
@@ -296,6 +299,42 @@ export default function Overview({ records, prevRecords = [], period, periodStar
     };
   }, [enriched]);
 
+  // ── Callback Tracker — group callbacks by resolved date ──
+  const callbackTracker = useMemo(() => {
+    const withCallback = enriched.filter(r => r._callbackWhen);
+    const byDate = {};
+    withCallback.forEach(r => {
+      const dateKey = r._callbackWhen.resolvedDate || 'unresolved';
+      if (!byDate[dateKey]) byDate[dateKey] = { date: dateKey, records: [] };
+      byDate[dateKey].records.push(r);
+    });
+    // Sort: overdue first, then today, tomorrow, future, unresolved last
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    return Object.values(byDate).sort((a, b) => {
+      if (a.date === 'unresolved') return 1;
+      if (b.date === 'unresolved') return -1;
+      return a.date.localeCompare(b.date);
+    }).map(group => ({
+      ...group,
+      label: group.date === 'unresolved' ? 'No Date' :
+             group.date < todayStr ? 'Overdue' :
+             group.date === todayStr ? 'Today' :
+             (() => {
+               const d = new Date(group.date + 'T00:00:00');
+               const tmr = new Date(now);
+               tmr.setDate(tmr.getDate() + 1);
+               const tmrStr = `${tmr.getFullYear()}-${String(tmr.getMonth() + 1).padStart(2, '0')}-${String(tmr.getDate()).padStart(2, '0')}`;
+               if (group.date === tmrStr) return 'Tomorrow';
+               return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', weekday: 'short' });
+             })(),
+      isOverdue: group.date !== 'unresolved' && group.date < todayStr,
+      isToday: group.date === todayStr,
+    }));
+  }, [enriched]);
+
+  const totalCallbacksDue = callbackTracker.reduce((s, g) => s + g.records.length, 0);
+
   // ── Agent Productivity ──
   const agentStats = useMemo(() => {
     const map = {};
@@ -394,6 +433,23 @@ export default function Overview({ records, prevRecords = [], period, periodStar
         return true;
       });
     }
+    if (filterCallbackDue) {
+      const now = new Date();
+      const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      const tmr = new Date(now); tmr.setDate(tmr.getDate() + 1);
+      const tmrStr = `${tmr.getFullYear()}-${String(tmr.getMonth() + 1).padStart(2, '0')}-${String(tmr.getDate()).padStart(2, '0')}`;
+      if (filterCallbackDue === 'has_callback') {
+        rows = rows.filter(r => r._callbackWhen);
+      } else if (filterCallbackDue === 'overdue') {
+        rows = rows.filter(r => r._callbackWhen?.resolvedDate && r._callbackWhen.resolvedDate < todayStr);
+      } else if (filterCallbackDue === 'today') {
+        rows = rows.filter(r => r._callbackWhen?.resolvedDate === todayStr);
+      } else if (filterCallbackDue === 'tomorrow') {
+        rows = rows.filter(r => r._callbackWhen?.resolvedDate === tmrStr);
+      } else if (filterCallbackDue === 'no_callback') {
+        rows = rows.filter(r => !r._callbackWhen && (r['Needs Callback'] || r['Callback Requested']));
+      }
+    }
     if (search) {
       const q = search.toLowerCase();
       rows = rows.filter(r =>
@@ -411,7 +467,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
       return [...rows].sort((a, b) => dir * ((a['Call Date'] || '') + (a['Call Time'] || '')).localeCompare((b['Call Date'] || '') + (b['Call Time'] || '')));
     }
     return [...rows].sort((a, b) => dir * (a['Call Time'] || '').localeCompare(b['Call Time'] || ''));
-  }, [enriched, effectiveAgentFilter, filterOutcome, filterTag, filterCategory, filterTimeRange, search, sortField, sortDir, isMultiDay]);
+  }, [enriched, effectiveAgentFilter, filterOutcome, filterTag, filterCategory, filterTimeRange, filterCallbackDue, search, sortField, sortDir, isMultiDay]);
 
   const visible = filtered.slice(0, visibleCount);
 
@@ -427,6 +483,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
     setFilterTag('');
     setFilterCategory('');
     setFilterTimeRange('');
+    setFilterCallbackDue('');
     setAgentFilter(null);
   };
 
@@ -437,7 +494,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
 
   const sortArrow = (field) => sortField === field ? (sortDir === 'asc' ? ' \u2191' : ' \u2193') : '';
 
-  const hasFilters = effectiveAgentFilter || filterOutcome || filterTag || filterCategory || filterTimeRange || search;
+  const hasFilters = effectiveAgentFilter || filterOutcome || filterTag || filterCategory || filterTimeRange || filterCallbackDue || search;
 
   return (
     <div className="space-y-6">
@@ -718,6 +775,80 @@ export default function Overview({ records, prevRecords = [], period, periodStar
         </div>
       )}
 
+      {/* Callback Tracker — Grouped by Due Date */}
+      {totalCallbacksDue > 0 && (
+        <div className="bg-card rounded-xl p-4 shadow-sm border border-gray-100">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-gray-700">Callback Tracker</h2>
+            <span className="text-xs text-gray-400">{totalCallbacksDue} callbacks identified from call summaries</span>
+          </div>
+          <p className="text-xs text-gray-500 mb-3">
+            Customers who requested a specific callback date/time. Extracted from call summaries and Callback Due field.
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-2 mb-4">
+            {callbackTracker.map(group => (
+              <div
+                key={group.date}
+                onClick={() => {
+                  if (group.date === 'unresolved') setFilterCallbackDue('has_callback');
+                  else if (group.isOverdue) setFilterCallbackDue('overdue');
+                  else if (group.isToday) setFilterCallbackDue('today');
+                  else setFilterCallbackDue('has_callback');
+                }}
+                className={`rounded-lg p-2.5 text-xs cursor-pointer transition-colors hover:ring-2 hover:ring-info/30 ${
+                  group.isOverdue ? 'bg-red-50 border border-red-200' :
+                  group.isToday ? 'bg-amber-50 border border-amber-200' :
+                  'bg-gray-50 border border-gray-200'
+                }`}
+              >
+                <p className={`font-semibold ${group.isOverdue ? 'text-red-700' : group.isToday ? 'text-amber-700' : 'text-gray-700'}`}>
+                  {group.label}
+                </p>
+                <p className={`text-lg font-bold ${group.isOverdue ? 'text-red-600' : group.isToday ? 'text-amber-600' : 'text-gray-900'}`}>
+                  {group.records.length}
+                </p>
+                {group.date !== 'unresolved' && (
+                  <p className="text-[10px] text-gray-400">{group.date}</p>
+                )}
+              </div>
+            ))}
+          </div>
+          {/* Quick list of callbacks with times */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-gray-100 text-left text-gray-500">
+                  <th className="px-3 py-1.5">Due</th>
+                  <th className="px-3 py-1.5">Time</th>
+                  <th className="px-3 py-1.5">Mobile</th>
+                  <th className="px-3 py-1.5">Agent</th>
+                  <th className="px-3 py-1.5">Call Date</th>
+                  <th className="px-3 py-1.5">Summary</th>
+                </tr>
+              </thead>
+              <tbody>
+                {callbackTracker.flatMap(group =>
+                  group.records.map(r => (
+                    <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
+                      <td className="px-3 py-1.5">
+                        <Chip text={formatCallbackDue(r._callbackWhen)} className={callbackDueColor(r._callbackWhen)} />
+                      </td>
+                      <td className="px-3 py-1.5 font-mono">{r._callbackWhen?.resolvedTime || '--'}</td>
+                      <td className="px-3 py-1.5"><PhoneNumber number={r['Mobile Number']} /></td>
+                      <td className="px-3 py-1.5">{r['Agent Name'] || '--'}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap">
+                        {r['Call Date'] ? new Date(r['Call Date'] + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '--'}
+                      </td>
+                      <td className="px-3 py-1.5 text-gray-500 max-w-[200px]">{truncate(r['Summary'], 60)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* C) Agent Productivity Strip */}
       {agentStats.length > 0 && (
         <div>
@@ -907,6 +1038,14 @@ export default function Overview({ records, prevRecords = [], period, periodStar
               <option value="afternoon">Afternoon (12-17)</option>
               <option value="evening">Evening (17-20)</option>
             </select>
+            <select value={filterCallbackDue} onChange={(e) => setFilterCallbackDue(e.target.value)} className="px-2 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-info">
+              <option value="">All Callbacks</option>
+              <option value="has_callback">Has Callback</option>
+              <option value="overdue">Overdue</option>
+              <option value="today">Due Today</option>
+              <option value="tomorrow">Due Tomorrow</option>
+              <option value="no_callback">Needs CB (No Date)</option>
+            </select>
           </div>
         </div>
         <div className="overflow-x-auto">
@@ -923,12 +1062,13 @@ export default function Overview({ records, prevRecords = [], period, periodStar
                 <th className="px-4 py-2">Outcome</th>
                 <th className="px-4 py-2">Sent.</th>
                 <th className="px-4 py-2">Category</th>
+                <th className="px-4 py-2">CB Due</th>
                 <th className="px-4 py-2">Summary</th>
               </tr>
             </thead>
             <tbody>
               {visible.length === 0 && (
-                <tr><td colSpan={isMultiDay ? 11 : 10} className="px-4 py-8 text-center text-gray-400">No calls match your filters</td></tr>
+                <tr><td colSpan={isMultiDay ? 12 : 11} className="px-4 py-8 text-center text-gray-400">No calls match your filters</td></tr>
               )}
               {visible.map((r, i) => (
                 <React.Fragment key={r.id || i}>
@@ -961,11 +1101,16 @@ export default function Overview({ records, prevRecords = [], period, periodStar
                         <Chip text={r.callCategory} className={callCategoryColor(r.callCategory)} />
                       ) : <span className="text-gray-300">--</span>}
                     </td>
+                    <td className="px-4 py-2">
+                      {r._callbackWhen ? (
+                        <Chip text={formatCallbackDue(r._callbackWhen)} className={callbackDueColor(r._callbackWhen)} />
+                      ) : <span className="text-gray-300">--</span>}
+                    </td>
                     <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'], 60)}</td>
                   </tr>
                   {expanded === i && (
                     <tr className="bg-gray-50">
-                      <td colSpan={isMultiDay ? 11 : 10} className="px-4 py-4">
+                      <td colSpan={isMultiDay ? 12 : 11} className="px-4 py-4">
                         <div className="grid gap-3 text-xs max-w-4xl">
                           <div className="flex flex-wrap gap-4">
                             <span>Tag: <Chip text={r._tag} className={callTagColor(r._tag)} /></span>
@@ -1014,6 +1159,9 @@ export default function Overview({ records, prevRecords = [], period, periodStar
                             {r['Churn Signal'] && <Chip text="Churn Risk" className="bg-orange-100 text-orange-700" />}
                             {r['Callback Requested'] && <Chip text="Callback Requested" className="bg-amber/20 text-amber" />}
                             {r['Needs Callback'] && <Chip text="Needs Callback" className="bg-red-100 text-red-700" />}
+                            {r._callbackWhen && (
+                              <Chip text={`CB Due: ${formatCallbackDue(r._callbackWhen)}`} className={callbackDueColor(r._callbackWhen)} />
+                            )}
                           </div>
                         </div>
                       </td>
