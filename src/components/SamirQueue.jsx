@@ -1,6 +1,6 @@
 import { useState, useMemo, Fragment } from 'react';
 import { patchRecord } from '../lib/airtable';
-import { truncate, sentimentScoreColor, fmtDuration, computeGist, gistColor, subscriberType, subscriberTypeColor, hasHealthTransactionIntent } from '../lib/helpers';
+import { truncate, sentimentScoreColor, fmtDuration, computeGist, gistColor, subscriberType, subscriberTypeColor } from '../lib/helpers';
 import PhoneNumber from './PhoneNumber';
 
 function Chip({ text, className }) {
@@ -81,7 +81,7 @@ function SectionHeader({ title, emoji, count, badgeColor = 'bg-pass' }) {
   );
 }
 
-export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested = [], onRemove, onRefresh }) {
+export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested = [], transactionIntents = [], onRemove, onRefresh }) {
   const [doneIds, setDoneIds] = useState(new Set());
   const [expanded, setExpanded] = useState(null);
 
@@ -94,40 +94,46 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
     }, 1500);
   };
 
-  // Filter all sections to only show customer health-transaction intent
-  const filteredLeads = useMemo(() => hotLeads.filter(hasHealthTransactionIntent), [hotLeads]);
-  const filteredLoans = useMemo(() => loans.filter(hasHealthTransactionIntent), [loans]);
-  const filteredChurn = useMemo(() => churn.filter(hasHealthTransactionIntent), [churn]);
-  const filteredCallbacksReq = useMemo(() => callbacksRequested.filter(hasHealthTransactionIntent), [callbacksRequested]);
+  // Transaction Signals: Sentiment DESC, then Duration DESC
+  const sortedTransactions = useMemo(() =>
+    [...transactionIntents].sort((a, b) => {
+      const sentDiff = (b['Customer Sentiment Score'] || 0) - (a['Customer Sentiment Score'] || 0);
+      if (sentDiff !== 0) return sentDiff;
+      return (b['Duration Seconds'] || 0) - (a['Duration Seconds'] || 0);
+    }),
+    [transactionIntents]
+  );
 
-  // Total filtered out for transparency
-  const totalRaw = hotLeads.length + loans.length + churn.length + callbacksRequested.length;
-  const totalFiltered = filteredLeads.length + filteredLoans.length + filteredChurn.length + filteredCallbacksReq.length;
-  const filteredOut = totalRaw - totalFiltered;
-
-  // Hot leads: sentiment score DESC
+  // Webinar Leads (formerly Hot Leads): sentiment score DESC
   const sortedLeads = useMemo(() =>
-    [...filteredLeads].sort((a, b) => (b['Customer Sentiment Score'] || 0) - (a['Customer Sentiment Score'] || 0)),
-    [filteredLeads]
+    [...hotLeads].sort((a, b) => (b['Customer Sentiment Score'] || 0) - (a['Customer Sentiment Score'] || 0)),
+    [hotLeads]
   );
 
   // Loans: Days Since Purchase ASC (most recent purchase first = most time-sensitive)
   const sortedLoans = useMemo(() =>
-    [...filteredLoans].sort((a, b) => (a['Days Since Purchase'] ?? 9999) - (b['Days Since Purchase'] ?? 9999)),
-    [filteredLoans]
+    [...loans].sort((a, b) => (a['Days Since Purchase'] ?? 9999) - (b['Days Since Purchase'] ?? 9999)),
+    [loans]
   );
 
   // Churn: Prior Attempts DESC (most attempts = most at risk)
   const sortedChurn = useMemo(() =>
-    [...filteredChurn].sort((a, b) => (b['Prior Call Attempts'] || 0) - (a['Prior Call Attempts'] || 0)),
-    [filteredChurn]
+    [...churn].sort((a, b) => (b['Prior Call Attempts'] || 0) - (a['Prior Call Attempts'] || 0)),
+    [churn]
   );
 
   // Callbacks: Call Time ASC (earliest first)
   const sortedCallbacksReq = useMemo(() =>
-    [...filteredCallbacksReq].sort((a, b) => (a['Call Time'] || '').localeCompare(b['Call Time'] || '')),
-    [filteredCallbacksReq]
+    [...callbacksRequested].sort((a, b) => (a['Call Time'] || '').localeCompare(b['Call Time'] || '')),
+    [callbacksRequested]
   );
+
+  const handleTransactionDone = async (r) => {
+    try {
+      await patchRecord(r.id, { 'Transaction Intent': false });
+      onRemove('transactionIntents', r.id);
+    } catch (e) { alert('Failed: ' + e.message); }
+  };
 
   const handleFollowUp = async (r) => {
     try {
@@ -161,67 +167,61 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-bold text-gray-900">Samir — Action Queue</h2>
-        <p className="text-sm text-gray-500">Health Transaction Intent — Medicine · Diagnostics · Surgery · Hospital · Consultation</p>
-        <p className="text-[10px] text-gray-400 mt-0.5">
-          Showing {totalFiltered} calls with customer transaction intent
-          {filteredOut > 0 && <span> · {filteredOut} non-transaction calls hidden</span>}
-        </p>
+        <p className="text-sm text-gray-500">Transaction Signals · Webinar Leads · Loans · Churn · Callbacks</p>
+        <p className="text-[10px] text-gray-400 mt-0.5">Action queues always show today's data</p>
       </div>
 
-      {/* CALLBACKS REQUESTED */}
+      {/* TRANSACTION SIGNALS — customer-initiated health/medical intent */}
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-        <SectionHeader title="Callbacks Requested" emoji="" count={sortedCallbacksReq.length} badgeColor="bg-amber" />
-        {sortedCallbacksReq.length === 0 ? (
-          <p className="px-4 py-8 text-center text-gray-400">No callback requests</p>
+        <SectionHeader title="Transaction Signals" emoji="" count={sortedTransactions.length} badgeColor="bg-red-600" />
+        <p className="px-4 text-[10px] text-gray-400 -mt-1 pb-2">Customer expressed medical/health transaction need (Gemini-detected)</p>
+        {sortedTransactions.length === 0 ? (
+          <p className="px-4 py-8 text-center text-gray-400">No transaction signals yet — goes live with next Gemini prompt update</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Mobile</th>
-                  <th className="px-4 py-2">Type</th>
-                  <th className="px-4 py-2">Gist</th>
-                  <th className="px-4 py-2">Sentiment</th>
-                  <th className="px-4 py-2">Objection</th>
                   <th className="px-4 py-2">Agent</th>
-                  <th className="px-4 py-2">Date</th>
+                  <th className="px-4 py-2">Time</th>
+                  <th className="px-4 py-2">What They Said</th>
+                  <th className="px-4 py-2">Medical Context</th>
+                  <th className="px-4 py-2">Sentiment</th>
                   <th className="px-4 py-2 max-w-[200px]">Summary</th>
                   <th className="px-4 py-2"></th>
                 </tr>
               </thead>
               <tbody>
-                {sortedCallbacksReq.map(r => {
-                  const key = `scbr-${r.id}`;
-                  const gist = computeGist(r);
-                  const subType = subscriberType(r);
+                {sortedTransactions.map(r => {
+                  const key = `sti-${r.id}`;
                   return (
                     <Fragment key={r.id}>
                       <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
                         <td className="px-4 py-2">
                           <PhoneNumber number={r['Mobile Number']} />
                         </td>
-                        <td className="px-4 py-2"><span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${subscriberTypeColor(subType)}`}>{subType}</span></td>
-                        <td className={`px-4 py-2 text-xs ${gistColor(gist)}`}>{gist}</td>
+                        <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
+                        <td className="px-4 py-2 text-xs">{r['Customer Objection'] || '--'}</td>
+                        <td className="px-4 py-2 text-xs">{r['Conversion Reason'] || r['Loan Context'] || r['Churn Reason'] || '--'}</td>
                         <td className="px-4 py-2">
                           {r['Customer Sentiment Score'] != null ? (
                             <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
                           ) : '--'}
                         </td>
-                        <td className="px-4 py-2 text-xs">{r['Customer Objection'] || '--'}</td>
-                        <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
-                        <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
                           <ActionButton
-                            label="Called Back"
-                            onClick={() => markDone(r.id, () => handleCallbackDone(r))}
-                            color="bg-amber"
+                            label="Initiate Outreach"
+                            onClick={() => markDone(r.id, () => handleTransactionDone(r))}
+                            color="bg-red-600"
                             recordId={r.id}
                             doneIds={doneIds}
                           />
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={9} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={8} />}
                     </Fragment>
                   );
                 })}
@@ -231,11 +231,11 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
         )}
       </div>
 
-      {/* HOT LEADS */}
+      {/* WEBINAR LEADS (formerly Hot Leads) — agent conversion metric */}
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-        <SectionHeader title="Hot Leads" emoji="" count={sortedLeads.length} badgeColor="bg-pass" />
+        <SectionHeader title="Webinar Leads" emoji="" count={sortedLeads.length} badgeColor="bg-pass" />
         {sortedLeads.length === 0 ? (
-          <p className="px-4 py-8 text-center text-gray-400">No hot leads today — check back after next scrape</p>
+          <p className="px-4 py-8 text-center text-gray-400">No webinar leads today — check back after next scrape</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -426,6 +426,69 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                         </td>
                       </tr>
                       {expanded === key && <ExpandedRow r={r} colSpan={13} />}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* CALLBACKS REQUESTED */}
+      <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        <SectionHeader title="Callbacks Requested" emoji="" count={sortedCallbacksReq.length} badgeColor="bg-amber" />
+        {sortedCallbacksReq.length === 0 ? (
+          <p className="px-4 py-8 text-center text-gray-400">No callback requests</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
+                  <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Type</th>
+                  <th className="px-4 py-2">Gist</th>
+                  <th className="px-4 py-2">Sentiment</th>
+                  <th className="px-4 py-2">Objection</th>
+                  <th className="px-4 py-2">Agent</th>
+                  <th className="px-4 py-2">Date</th>
+                  <th className="px-4 py-2 max-w-[200px]">Summary</th>
+                  <th className="px-4 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedCallbacksReq.map(r => {
+                  const key = `scbr-${r.id}`;
+                  const gist = computeGist(r);
+                  const subType = subscriberType(r);
+                  return (
+                    <Fragment key={r.id}>
+                      <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
+                        <td className="px-4 py-2">
+                          <PhoneNumber number={r['Mobile Number']} />
+                        </td>
+                        <td className="px-4 py-2"><span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${subscriberTypeColor(subType)}`}>{subType}</span></td>
+                        <td className={`px-4 py-2 text-xs ${gistColor(gist)}`}>{gist}</td>
+                        <td className="px-4 py-2">
+                          {r['Customer Sentiment Score'] != null ? (
+                            <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
+                          ) : '--'}
+                        </td>
+                        <td className="px-4 py-2 text-xs">{r['Customer Objection'] || '--'}</td>
+                        <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
+                          <ActionButton
+                            label="Called Back"
+                            onClick={() => markDone(r.id, () => handleCallbackDone(r))}
+                            color="bg-amber"
+                            recordId={r.id}
+                            doneIds={doneIds}
+                          />
+                        </td>
+                      </tr>
+                      {expanded === key && <ExpandedRow r={r} colSpan={9} />}
                     </Fragment>
                   );
                 })}
