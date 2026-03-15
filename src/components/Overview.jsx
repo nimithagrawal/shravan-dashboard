@@ -159,8 +159,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
   }, [enriched, isMultiDay, period]);
 
   const chartTitle = useMemo(() => {
-    if (!isMultiDay) return 'Call Distribution \u2014 Today by Hour';
-    if (period === 'yesterday') return 'Call Distribution \u2014 Yesterday by Hour';
+    if (!isMultiDay) return `Call Distribution \u2014 ${period === 'yesterday' ? 'Yesterday' : 'Today'} by Hour`;
     if (period === 'week') return 'Call Distribution \u2014 This Week by Day';
     if (period === 'lastweek') return 'Call Distribution \u2014 Last Week by Day';
     if (period === 'mtd') return `Call Distribution \u2014 ${new Date(periodStart + 'T00:00:00').toLocaleDateString('en-IN', { month: 'long' })} by Date`;

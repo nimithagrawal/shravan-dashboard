@@ -124,8 +124,10 @@ export async function fetchRecordsForPeriod(startDate, endDate, onProgress = nul
     if (onProgress) onProgress({ loaded: cached.length });
     return cached;
   }
-  // Always use range formula — IS_SAME with string dates doesn't work in Airtable
-  const formula = `AND({Call Date}>='${startDate}', {Call Date}<='${endDate}')`;
+  // Use DATETIME_FORMAT to extract date string — raw string comparisons don't work on Date fields
+  const formula = startDate === endDate
+    ? `IS_SAME({Call Date}, DATETIME_PARSE('${startDate}', 'YYYY-MM-DD'), 'day')`
+    : `AND(DATETIME_FORMAT({Call Date},'YYYY-MM-DD')>='${startDate}',DATETIME_FORMAT({Call Date},'YYYY-MM-DD')<='${endDate}')`;
   const data = await fetchAll(formula, onProgress);
   setCache(cacheKey, data);
   return data;
