@@ -21,7 +21,7 @@ const OUTCOME_MAP = {
 };
 
 function mapRecord(r) {
-  const rec = { id: r.id, ...r.fields };
+  const rec = { id: r.id, _createdTime: r.createdTime, ...r.fields };
   for (const [name, alias] of Object.entries(FIELD_ALIASES)) {
     rec[alias] = rec[name] ?? null;
   }
@@ -141,7 +141,11 @@ export function getLastScrapedTime(records) {
   if (!records || records.length === 0) return null;
   let latest = null;
   for (const r of records) {
-    const t = r['Processed At'];
+    let t = r['Processed At'];
+    // If Processed At is date-only (no time info), use Airtable createdTime instead
+    if (t && /^\d{4}-\d{2}-\d{2}$/.test(t) && r._createdTime) {
+      t = r._createdTime;
+    }
     if (t && (!latest || t > latest)) latest = t;
   }
   return latest;
