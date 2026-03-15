@@ -173,3 +173,113 @@ export function scrapeAgeStatus(dateStr) {
   if (diff < 65) return { label: `${Math.round(diff)}m ago`, color: 'text-amber' };
   return { label: `${Math.round(diff)}m ago`, color: 'text-fail' };
 }
+
+// ── Period / Talk Time helpers ──
+
+const STT_FAILED = ['[STT Failed]', '[STT Failed — audio could not be processed]', 'failed', ''];
+
+/**
+ * Connected call = real conversation happened.
+ * duration > 20s AND transcript not STT-failed AND (outcome=Completed OR duration>60)
+ */
+export function isConnectedCall(r) {
+  const transcript = (r['Transcript'] || '').trim();
+  const dur = r['Duration Seconds'] || 0;
+  const outcome = r['Call Outcome'] || '';
+  return dur > 20 && !STT_FAILED.includes(transcript) && (outcome === 'Completed' || dur > 60);
+}
+
+/** Format seconds as "Xh Ym" for talk time display */
+export function fmtTalkTime(sec) {
+  if (sec == null || sec <= 0) return '0m';
+  const h = Math.floor(sec / 3600);
+  const m = Math.round((sec % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+/** Format seconds as "Xm Ys" for avg talk time */
+export function fmtAvgTalkTime(sec) {
+  if (sec == null || sec <= 0) return '0s';
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  if (m > 0) return `${m}m ${String(s).padStart(2, '0')}s`;
+  return `${s}s`;
+}
+
+// ── Period date computation (IST = UTC+5:30) ──
+
+function todayIST() {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+}
+
+function fmtDate(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+function addDays(d, n) {
+  const r = new Date(d);
+  r.setDate(r.getDate() + n);
+  return r;
+}
+
+export function getPeriodDates(period, customStart, customEnd) {
+  const now = todayIST();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  switch (period) {
+    case 'today':
+      return { start: fmtDate(today), end: fmtDate(today) };
+    case 'yesterday': {
+      const y = addDays(today, -1);
+      return { start: fmtDate(y), end: fmtDate(y) };
+    }
+    case 'week': {
+      const dow = today.getDay();
+      const mon = addDays(today, -(dow === 0 ? 6 : dow - 1));
+      return { start: fmtDate(mon), end: fmtDate(today) };
+    }
+    case 'lastweek': {
+      const dow = today.getDay();
+      const thisMon = addDays(today, -(dow === 0 ? 6 : dow - 1));
+      const lastMon = addDays(thisMon, -7);
+      const lastSun = addDays(thisMon, -1);
+      return { start: fmtDate(lastMon), end: fmtDate(lastSun) };
+    }
+    case 'mtd': {
+      const first = new Date(today.getFullYear(), today.getMonth(), 1);
+      return { start: fmtDate(first), end: fmtDate(today) };
+    }
+    case 'lastmonth': {
+      const first = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+      const last = new Date(today.getFullYear(), today.getMonth(), 0);
+      return { start: fmtDate(first), end: fmtDate(last) };
+    }
+    case 'custom':
+      return { start: customStart || fmtDate(today), end: customEnd || fmtDate(today) };
+    default:
+      return { start: fmtDate(today), end: fmtDate(today) };
+  }
+}
+
+/** Get the "previous period" dates for comparison (same duration, immediately before) */
+export function getPreviousPeriodDates(start, end) {
+  const s = new Date(start + 'T00:00:00');
+  const e = new Date(end + 'T00:00:00');
+  const days = Math.round((e - s) / 86400000) + 1;
+  const prevEnd = addDays(s, -1);
+  const prevStart = addDays(prevEnd, -(days - 1));
+  return { start: fmtDate(prevStart), end: fmtDate(prevEnd) };
+}
+
+/** Format a period date range for display: "1 Mar – 15 Mar 2026" */
+export function formatPeriodLabel(start, end) {
+  const fmt = (d) => {
+    const date = new Date(d + 'T00:00:00');
+    return date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
+  };
+  if (start === end) return fmt(start);
+  const endDate = new Date(end + 'T00:00:00');
+  const endFmt = endDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+  return `${fmt(start)} – ${endFmt}`;
+}

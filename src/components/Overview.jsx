@@ -1,21 +1,27 @@
 import React, { useState, useMemo } from 'react';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import {
   qaScore, qaRating, fmtDuration, outcomeColor, ratingColor, kpiColor,
   sentimentDotColor, sentimentScoreColor, conversionSignalColor,
   callCategoryColor,
-  computeCallTag, callTagColor, isHumanPickup, truncate, maskPhone,
-  intentChipColor,
+  computeCallTag, callTagColor, isHumanPickup, isConnectedCall,
+  truncate, maskPhone, intentChipColor,
+  fmtTalkTime, fmtAvgTalkTime,
 } from '../lib/helpers';
 import PhoneNumber from './PhoneNumber';
 
-function KpiCard({ label, value, color, badge }) {
+function KpiCard({ label, value, color, badge, comparison }) {
   return (
     <div className="bg-card rounded-xl p-4 shadow-sm border border-gray-100 relative">
       <p className="text-xs text-gray-500 mb-1">{label}</p>
       <p className={`text-2xl font-bold ${color || 'text-gray-900'}`}>{value}</p>
       {badge != null && badge > 0 && (
         <span className="absolute top-2 right-2 bg-fail text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{badge}</span>
+      )}
+      {comparison != null && (
+        <p className={`text-[10px] mt-0.5 ${comparison >= 0 ? 'text-pass' : 'text-fail'}`}>
+          {comparison >= 0 ? '\u2191' : '\u2193'} {comparison >= 0 ? '+' : ''}{comparison}% vs prev
+        </p>
       )}
     </div>
   );
@@ -27,7 +33,12 @@ function Chip({ text, className }) {
 
 const QA_LABELS = ['Q1 User Agent Screened', 'Q2 Cashback Correct', 'Q3 WA Link Sent', 'Q4 Hi Attempt Made', 'Q5 Cashback Mechanic Explained', 'Q6 No Improvised Claims'];
 
-export default function Overview({ today, agentFilter, setAgentFilter }) {
+function pctChange(curr, prev) {
+  if (!prev || prev === 0) return null;
+  return Math.round(((curr - prev) / prev) * 100);
+}
+
+export default function Overview({ records, prevRecords = [], period, periodStart, periodEnd, agentFilter, setAgentFilter }) {
   const [expanded, setExpanded] = useState(null);
   const [search, setSearch] = useState('');
   const [filterAgent, setFilterAgent] = useState('');
@@ -38,73 +49,182 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
   const [sortField, setSortField] = useState('time');
   const [sortDir, setSortDir] = useState('desc');
 
-  // Apply agent filter from card click
   const effectiveAgentFilter = agentFilter || filterAgent;
+  const isToday = period === 'today';
+  const isMultiDay = periodStart !== periodEnd;
 
   // Enrich all records
   const enriched = useMemo(() =>
-    today.map(r => ({
+    records.map(r => ({
       ...r,
       _tag: computeCallTag(r),
       _qs: qaScore(r),
       _qr: qaRating(qaScore(r)),
       _human: isHumanPickup(r),
+      _connected: isConnectedCall(r),
     })),
-    [today]
+    [records]
   );
 
-  // ── SECTION A: KPI Strip ──
+  // Previous period enriched (for comparison)
+  const prevEnriched = useMemo(() =>
+    prevRecords.map(r => ({
+      ...r,
+      _human: isHumanPickup(r),
+      _connected: isConnectedCall(r),
+    })),
+    [prevRecords]
+  );
+
+  // ── KPI computations ──
   const total = enriched.length;
   const humanPickups = enriched.filter(r => r._human).length;
   const humanPickupRate = total > 0 ? Math.round((humanPickups / total) * 100) : 0;
+  const connectedCalls = enriched.filter(r => r._connected);
+  const totalTalkTimeSec = connectedCalls.reduce((s, r) => s + (r['Duration Seconds'] || 0), 0);
   const callbacksPending = enriched.filter(r => r['Needs Callback']).length;
   const urgentCallbacks = enriched.filter(r => r['Needs Callback'] && r['Callback Priority'] === 'Urgent').length;
   const activeSignals = enriched.filter(r => r['Hot Lead'] || r['Loan Signal'] || r['Churn Signal']).length;
   const violations = enriched.filter(r => r['Compliance Violation']).length;
 
-  // ── SECTION B: Hourly Chart ──
-  const hourlyData = useMemo(() => {
-    const hours = {};
-    for (let h = 9; h <= 20; h++) hours[h] = { hour: `${h}:00`, total: 0, connected: 0 };
+  // Days in period for avg daily
+  const daysInPeriod = isMultiDay
+    ? Math.max(1, Math.round((new Date(periodEnd) - new Date(periodStart)) / 86400000) + 1)
+    : 1;
+  const avgDailyCalls = isMultiDay ? Math.round(total / daysInPeriod) : null;
+
+  // Previous period comparisons
+  const prevTotal = prevEnriched.length;
+  const prevHumanPickups = prevEnriched.filter(r => r._human).length;
+  const prevPickupRate = prevTotal > 0 ? Math.round((prevHumanPickups / prevTotal) * 100) : 0;
+  const prevConnected = prevEnriched.filter(r => r._connected);
+  const prevTalkTime = prevConnected.reduce((s, r) => s + (r['Duration Seconds'] || 0), 0);
+
+  const cmpTotal = pctChange(total, prevTotal);
+  const cmpPickup = pctChange(humanPickupRate, prevPickupRate);
+  const cmpTalkTime = pctChange(totalTalkTimeSec, prevTalkTime);
+
+  // Hot + Warm
+  const hotCount = enriched.filter(r => r._tag === 'HOT').length;
+  const warmCount = enriched.filter(r => r._tag === 'WARM').length;
+  const callbackRequestedCount = enriched.filter(r => r['Callback Requested']).length;
+
+  // ── Summary Stats Row ──
+  const summaryLine = `${total.toLocaleString()} calls | ${connectedCalls.length} connected (${total > 0 ? Math.round((connectedCalls.length / total) * 100) : 0}%) | ${fmtTalkTime(totalTalkTimeSec)} talk time | ${hotCount + warmCount} leads | ${callbacksPending} pending retry`;
+
+  // ── Hourly/Daily Chart ──
+  const chartData = useMemo(() => {
+    if (!isMultiDay) {
+      // Hourly view
+      const hours = {};
+      for (let h = 9; h <= 20; h++) hours[h] = { label: `${h}:00`, total: 0, connected: 0 };
+      enriched.forEach(r => {
+        const t = r['Call Time'];
+        if (!t) return;
+        const h = parseInt(t.split(':')[0], 10);
+        if (hours[h]) {
+          hours[h].total++;
+          if (r._connected) hours[h].connected++;
+        }
+      });
+      return Object.values(hours);
+    }
+    // Multi-day: by day of week for week periods, by date for MTD/month
+    if (period === 'week' || period === 'lastweek') {
+      const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+      const map = {};
+      days.forEach(d => { map[d] = { label: d, total: 0, connected: 0 }; });
+      enriched.forEach(r => {
+        const d = r['Call Date'];
+        if (!d) return;
+        const date = new Date(d + 'T00:00:00');
+        const dow = date.getDay();
+        const dayName = days[dow === 0 ? 6 : dow - 1];
+        map[dayName].total++;
+        if (r._connected) map[dayName].connected++;
+      });
+      return Object.values(map);
+    }
+    // By date
+    const dateMap = {};
     enriched.forEach(r => {
-      const t = r['Call Time'];
-      if (!t) return;
-      const h = parseInt(t.split(':')[0], 10);
-      if (hours[h]) {
-        hours[h].total++;
-        if (r._human) hours[h].connected++;
-      }
+      const d = r['Call Date'];
+      if (!d) return;
+      const day = d.slice(8, 10);
+      if (!dateMap[d]) dateMap[d] = { label: day, total: 0, connected: 0 };
+      dateMap[d].total++;
+      if (r._connected) dateMap[d].connected++;
     });
-    return Object.values(hours);
-  }, [enriched]);
+    return Object.values(dateMap).sort((a, b) => a.label.localeCompare(b.label));
+  }, [enriched, isMultiDay, period]);
 
-  const peakHour = useMemo(() => {
-    const peak = hourlyData.reduce((best, h) => h.total > best.total ? h : best, { total: 0 });
-    return peak.total > 0 ? peak.hour : null;
-  }, [hourlyData]);
+  const chartTitle = useMemo(() => {
+    if (!isMultiDay) return 'Call Distribution \u2014 Today by Hour';
+    if (period === 'yesterday') return 'Call Distribution \u2014 Yesterday by Hour';
+    if (period === 'week') return 'Call Distribution \u2014 This Week by Day';
+    if (period === 'lastweek') return 'Call Distribution \u2014 Last Week by Day';
+    if (period === 'mtd') return `Call Distribution \u2014 ${new Date(periodStart + 'T00:00:00').toLocaleDateString('en-IN', { month: 'long' })} by Date`;
+    if (period === 'lastmonth') return `Call Distribution \u2014 ${new Date(periodStart + 'T00:00:00').toLocaleDateString('en-IN', { month: 'long' })} by Date`;
+    return 'Call Distribution';
+  }, [isMultiDay, period, periodStart]);
 
-  // ── SECTION C: Agent Productivity ──
+  const peakItem = useMemo(() => {
+    const peak = chartData.reduce((best, h) => h.total > best.total ? h : best, { total: 0 });
+    return peak.total > 0 ? peak.label : null;
+  }, [chartData]);
+
+  // ── Agent Productivity ──
   const agentStats = useMemo(() => {
     const map = {};
     enriched.forEach(r => {
       const agent = r['Agent Name'] || 'Unknown';
-      if (!map[agent]) map[agent] = { name: agent, calls: 0, connected: 0, totalSec: 0, hot: 0, warm: 0 };
+      if (!map[agent]) map[agent] = { name: agent, calls: 0, connected: 0, totalSec: 0, hot: 0, warm: 0, bestCall: 0 };
       map[agent].calls++;
-      if (r._human) {
+      if (r._connected) {
         map[agent].connected++;
-        map[agent].totalSec += (r['Duration Seconds'] || 0);
+        const dur = r['Duration Seconds'] || 0;
+        map[agent].totalSec += dur;
+        if (dur > map[agent].bestCall) map[agent].bestCall = dur;
       }
       if (r._tag === 'HOT') map[agent].hot++;
       if (r._tag === 'WARM') map[agent].warm++;
+    });
+    // Previous period per agent for comparison
+    const prevMap = {};
+    prevEnriched.forEach(r => {
+      const agent = r['Agent Name'] || 'Unknown';
+      if (!prevMap[agent]) prevMap[agent] = { totalSec: 0 };
+      if (r._connected) prevMap[agent].totalSec += (r['Duration Seconds'] || 0);
     });
     return Object.values(map).map(a => ({
       ...a,
       rate: a.calls > 0 ? Math.round((a.connected / a.calls) * 100) : 0,
       avgTime: a.connected > 0 ? Math.round(a.totalSec / a.connected) : 0,
-    })).sort((a, b) => b.calls - a.calls);
-  }, [enriched]);
+      vsPrev: prevMap[a.name] ? pctChange(a.totalSec, prevMap[a.name].totalSec) : null,
+    })).sort((a, b) => b.totalSec - a.totalSec);
+  }, [enriched, prevEnriched]);
 
-  // ── SECTION D: Conversion + Sentiment ──
+  // ── Agent Talk Time Insights ──
+  const talkTimeInsights = useMemo(() => {
+    const insights = [];
+    const shortAgent = agentStats.find(a => a.connected > 0 && a.avgTime < 45);
+    if (shortAgent) {
+      insights.push(`${shortAgent.name} avg call duration is only ${shortAgent.avgTime}s \u2014 calls are dropping very early. Check script opening.`);
+    }
+    if (agentStats.length >= 2) {
+      const sorted = [...agentStats].filter(a => a.connected > 0).sort((a, b) => b.totalSec - a.totalSec);
+      if (sorted.length >= 2 && sorted[0].totalSec >= sorted[sorted.length - 1].totalSec * 2) {
+        const pct = Math.round(((sorted[0].totalSec - sorted[sorted.length - 1].totalSec) / sorted[sorted.length - 1].totalSec) * 100);
+        insights.push(`${sorted[0].name} is spending ${pct}% more time on connected calls than ${sorted[sorted.length - 1].name}. Review approach difference.`);
+      }
+    }
+    if (isToday && totalTalkTimeSec < 7200 && total > 10) {
+      insights.push(`Total team talk time is ${fmtTalkTime(totalTalkTimeSec)} today. At ${total} calls, average engagement is very low.`);
+    }
+    return insights;
+  }, [agentStats, totalTalkTimeSec, total, isToday]);
+
+  // ── Conversion + Sentiment ──
   const conversionCounts = useMemo(() => {
     const c = { hot: 0, warm: 0, cold: 0, dead: 0, Unreachable: 0 };
     enriched.forEach(r => {
@@ -129,9 +249,8 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
   const positiveSent = sentimentScores.filter(s => s >= 4).length;
   const neutralSent = sentimentScores.filter(s => s === 3).length;
   const negativeSent = sentimentScores.filter(s => s < 3).length;
-  const callbackRequestedCount = enriched.filter(r => r['Callback Requested']).length;
 
-  // ── SECTION E: Call Log (filtered) ──
+  // ── Call Log (filtered) ──
   const agents = useMemo(() => [...new Set(enriched.map(r => r['Agent Name']).filter(Boolean))].sort(), [enriched]);
   const outcomes = useMemo(() => [...new Set(enriched.map(r => r['Call Outcome']).filter(Boolean))].sort(), [enriched]);
   const tags = useMemo(() => [...new Set(enriched.map(r => r._tag))].sort(), [enriched]);
@@ -155,8 +274,12 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
     if (sortField === 'duration') {
       return [...rows].sort((a, b) => dir * ((a['Duration Seconds'] || 0) - (b['Duration Seconds'] || 0)));
     }
+    // Sort by date+time for multi-day, just time for single-day
+    if (isMultiDay) {
+      return [...rows].sort((a, b) => dir * ((a['Call Date'] || '') + (a['Call Time'] || '')).localeCompare((b['Call Date'] || '') + (b['Call Time'] || '')));
+    }
     return [...rows].sort((a, b) => dir * (a['Call Time'] || '').localeCompare(b['Call Time'] || ''));
-  }, [enriched, effectiveAgentFilter, filterOutcome, filterTag, filterCategory, search, sortField, sortDir]);
+  }, [enriched, effectiveAgentFilter, filterOutcome, filterTag, filterCategory, search, sortField, sortDir, isMultiDay]);
 
   const visible = filtered.slice(0, visibleCount);
 
@@ -179,31 +302,40 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
     else { setSortField(field); setSortDir('desc'); }
   };
 
-  const sortArrow = (field) => sortField === field ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
+  const sortArrow = (field) => sortField === field ? (sortDir === 'asc' ? ' \u2191' : ' \u2193') : '';
 
   const hasFilters = effectiveAgentFilter || filterOutcome || filterTag || filterCategory || search;
 
   return (
     <div className="space-y-6">
-      {/* A) KPI Strip */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-        <KpiCard label="Total Calls" value={total} />
-        <KpiCard label="Human Pickup Rate" value={`${humanPickupRate}%`} color={kpiColor(humanPickupRate, 25, 15)} />
-        <KpiCard label="Callbacks Pending" value={callbacksPending} badge={urgentCallbacks} />
-        <KpiCard label="Active Signals" value={activeSignals} color={activeSignals > 0 ? 'text-info' : 'text-gray-400'} />
-        <KpiCard label="Compliance" value={violations > 0 ? `${violations} issue${violations > 1 ? 's' : ''}` : 'Clean'} color={violations > 0 ? 'text-fail' : 'text-pass'} />
-        <KpiCard label="Human Pickups" value={humanPickups} />
+      {/* Summary Stats Row */}
+      <div className="bg-white rounded-lg px-4 py-2 text-xs text-gray-600 border border-gray-100 shadow-sm">
+        {summaryLine}
       </div>
 
-      {/* B) Hourly Call Distribution */}
+      {/* A) KPI Strip */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <KpiCard label="Total Calls" value={total.toLocaleString()} comparison={cmpTotal} />
+        <KpiCard label="Human Pickup Rate" value={`${humanPickupRate}%`} color={kpiColor(humanPickupRate, 25, 15)} comparison={cmpPickup} />
+        {isMultiDay ? (
+          <KpiCard label="Avg Daily Calls" value={avgDailyCalls} />
+        ) : (
+          <KpiCard label="Callbacks Pending" value={callbacksPending} badge={urgentCallbacks} />
+        )}
+        <KpiCard label="Total Talk Time" value={fmtTalkTime(totalTalkTimeSec)} comparison={cmpTalkTime} />
+        <KpiCard label="Compliance" value={violations > 0 ? `${violations} issue${violations > 1 ? 's' : ''}` : 'Clean'} color={violations > 0 ? 'text-fail' : 'text-pass'} />
+        <KpiCard label="Active Signals" value={activeSignals} color={activeSignals > 0 ? 'text-info' : 'text-gray-400'} />
+      </div>
+
+      {/* B) Call Distribution Chart */}
       <div className="bg-card rounded-xl p-4 shadow-sm border border-gray-100">
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-semibold text-gray-700">Hourly Call Distribution</h2>
-          {peakHour && <span className="text-xs text-gray-500">Peak: {peakHour}</span>}
+          <h2 className="text-sm font-semibold text-gray-700">{chartTitle}</h2>
+          {peakItem && <span className="text-xs text-gray-500">Peak: {peakItem}</span>}
         </div>
         <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={hourlyData} margin={{ top: 5, right: 10, left: -10, bottom: 5 }}>
-            <XAxis dataKey="hour" tick={{ fontSize: 10 }} />
+          <BarChart data={chartData} margin={{ top: 5, right: 10, left: -10, bottom: 5 }}>
+            <XAxis dataKey="label" tick={{ fontSize: 10 }} />
             <YAxis tick={{ fontSize: 10 }} />
             <Tooltip />
             <Bar dataKey="total" name="Total" fill="#e5e7eb" radius={[4, 4, 0, 0]} />
@@ -221,7 +353,7 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
               <div
                 key={a.name}
                 onClick={() => handleAgentCardClick(a.name)}
-                className={`flex-shrink-0 w-44 bg-card rounded-xl p-3 shadow-sm border cursor-pointer transition-all hover:shadow-md ${
+                className={`flex-shrink-0 w-48 bg-card rounded-xl p-3 shadow-sm border cursor-pointer transition-all hover:shadow-md ${
                   agentFilter === a.name ? 'border-info ring-2 ring-info/30' : 'border-gray-100'
                 }`}
               >
@@ -229,6 +361,7 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
                 <div className="mt-2 space-y-1 text-xs text-gray-600">
                   <p>{a.calls} calls <span className={`font-bold ${kpiColor(a.rate, 25, 15)}`}>{a.rate}%</span></p>
                   <p>{a.connected} connected, avg {fmtDuration(a.avgTime)}</p>
+                  <p className="font-medium">Talk: {fmtTalkTime(a.totalSec)}</p>
                   <div className="flex gap-2 mt-1">
                     {a.hot > 0 && <span className="text-red-600 font-bold">{a.hot} hot</span>}
                     {a.warm > 0 && <span className="text-amber font-bold">{a.warm} warm</span>}
@@ -240,9 +373,59 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
         </div>
       )}
 
+      {/* Agent Talk Time Table */}
+      {agentStats.some(a => a.connected > 0) && (
+        <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="p-4 pb-2">
+            <h2 className="text-sm font-semibold text-gray-700">Agent Talk Time</h2>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
+                  <th className="px-4 py-2">Agent</th>
+                  <th className="px-4 py-2">Calls Made</th>
+                  <th className="px-4 py-2">Connected</th>
+                  <th className="px-4 py-2">Total Talk Time</th>
+                  <th className="px-4 py-2">Avg Talk Time</th>
+                  <th className="px-4 py-2">Best Call</th>
+                  <th className="px-4 py-2">vs Prev</th>
+                </tr>
+              </thead>
+              <tbody>
+                {agentStats.filter(a => a.connected > 0).map(a => (
+                  <tr key={a.name} className="border-b border-gray-50 hover:bg-gray-50">
+                    <td className="px-4 py-2 font-medium">{a.name}</td>
+                    <td className="px-4 py-2 font-mono">{a.calls}</td>
+                    <td className="px-4 py-2 font-mono">{a.connected}</td>
+                    <td className="px-4 py-2 font-mono font-bold">{fmtTalkTime(a.totalSec)}</td>
+                    <td className="px-4 py-2 font-mono">{fmtAvgTalkTime(a.avgTime)}</td>
+                    <td className="px-4 py-2 font-mono">{fmtDuration(a.bestCall)}</td>
+                    <td className="px-4 py-2">
+                      {a.vsPrev != null ? (
+                        <span className={`text-xs font-bold ${a.vsPrev >= 0 ? 'text-pass' : 'text-fail'}`}>
+                          {a.vsPrev >= 0 ? '\u2191' : '\u2193'} {a.vsPrev >= 0 ? '+' : ''}{a.vsPrev}%
+                        </span>
+                      ) : <span className="text-gray-300">--</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {/* Insights */}
+          {talkTimeInsights.length > 0 && (
+            <div className="px-4 py-3 border-t border-gray-100 space-y-1">
+              {talkTimeInsights.map((insight, i) => (
+                <p key={i} className="text-xs text-amber">{insight}</p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* D) Conversion + Sentiment Row */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Conversion Funnel */}
         <div className="bg-card rounded-xl p-4 shadow-sm border border-gray-100">
           <h2 className="text-sm font-semibold text-gray-700 mb-3">Conversion Funnel</h2>
           <div className="space-y-2">
@@ -263,7 +446,6 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
             })}
           </div>
         </div>
-        {/* Sentiment Summary */}
         <div className="bg-card rounded-xl p-4 shadow-sm border border-gray-100">
           <h2 className="text-sm font-semibold text-gray-700 mb-3">Customer Sentiment</h2>
           <div className="grid grid-cols-2 gap-3 text-sm">
@@ -293,8 +475,8 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
             </div>
             <div>
               <p className="text-xs text-gray-500 mb-1">Probable Transactors</p>
-              <p className={`text-xl font-bold ${(conversionCounts.hot + conversionCounts.warm) > 0 ? 'text-pass' : 'text-gray-400'}`}>
-                {conversionCounts.hot + conversionCounts.warm}
+              <p className={`text-xl font-bold ${(hotCount + warmCount) > 0 ? 'text-pass' : 'text-gray-400'}`}>
+                {hotCount + warmCount}
               </p>
               <p className="text-[10px] text-gray-400">Hot + Warm</p>
             </div>
@@ -307,13 +489,14 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
         <div className="p-4 pb-2 space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-gray-700">
-              Call Log {hasFilters && <span className="text-xs text-gray-400 font-normal">({filtered.length} of {total})</span>}
+              Call Log
+              {hasFilters && <span className="text-xs text-gray-400 font-normal ml-1">({filtered.length} of {total})</span>}
+              {!hasFilters && isMultiDay && <span className="text-xs text-gray-400 font-normal ml-1">({total.toLocaleString()} calls)</span>}
             </h2>
             {hasFilters && (
               <button onClick={clearFilters} className="text-xs text-info hover:underline">Clear filters</button>
             )}
           </div>
-          {/* Filters */}
           <div className="flex flex-wrap gap-2">
             <input
               type="text"
@@ -345,6 +528,7 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
             <thead>
               <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                 <th className="px-4 py-2">Tag</th>
+                {isMultiDay && <th className="px-4 py-2">Date</th>}
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-800" onClick={() => toggleSort('time')}>Time{sortArrow('time')}</th>
                 <th className="px-4 py-2">Agent</th>
                 <th className="px-4 py-2">Mobile</th>
@@ -357,7 +541,7 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
             </thead>
             <tbody>
               {visible.length === 0 && (
-                <tr><td colSpan={9} className="px-4 py-8 text-center text-gray-400">No calls match your filters</td></tr>
+                <tr><td colSpan={isMultiDay ? 10 : 9} className="px-4 py-8 text-center text-gray-400">No calls match your filters</td></tr>
               )}
               {visible.map((r, i) => (
                 <React.Fragment key={r.id || i}>
@@ -366,6 +550,11 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
                     className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer"
                   >
                     <td className="px-4 py-2"><Chip text={r._tag} className={callTagColor(r._tag)} /></td>
+                    {isMultiDay && (
+                      <td className="px-4 py-2 whitespace-nowrap text-xs">
+                        {r['Call Date'] ? new Date(r['Call Date'] + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '--'}
+                      </td>
+                    )}
                     <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Time'] || '--'}</td>
                     <td className="px-4 py-2 text-xs">{r['Agent Name'] || '--'}</td>
                     <td className="px-4 py-2"><PhoneNumber number={r['Mobile Number']} /></td>
@@ -388,9 +577,8 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
                   </tr>
                   {expanded === i && (
                     <tr className="bg-gray-50">
-                      <td colSpan={9} className="px-4 py-4">
+                      <td colSpan={isMultiDay ? 10 : 9} className="px-4 py-4">
                         <div className="grid gap-3 text-xs max-w-4xl">
-                          {/* Call details row */}
                           <div className="flex flex-wrap gap-4">
                             {r.callCategory && <span>Category: <Chip text={r.callCategory} className={callCategoryColor(r.callCategory)} /></span>}
                             {r.evaluationFramework && <span>Framework: <span className="font-medium">{r.evaluationFramework}</span></span>}
@@ -398,13 +586,12 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
                             {r['Customer Intent Signal'] && <span>Intent: <Chip text={r['Customer Intent Signal']} className={intentChipColor(r['Customer Intent Signal'])} /></span>}
                             {r['Attempt Number'] && <span>Attempt: {r['Attempt Number']}</span>}
                           </div>
-                          {/* QA Checklist */}
                           <div>
-                            <p className="font-semibold text-gray-600 mb-1">QA ({r._qs}/6 — {r._qr})</p>
+                            <p className="font-semibold text-gray-600 mb-1">QA ({r._qs}/6 \u2014 {r._qr})</p>
                             <div className="flex flex-wrap gap-2">
                               {QA_LABELS.map(q => (
                                 <span key={q} className="flex items-center gap-1">
-                                  {r[q] ? <span className="text-pass">✓</span> : <span className="text-fail">✗</span>}
+                                  {r[q] ? <span className="text-pass">{'\u2713'}</span> : <span className="text-fail">{'\u2717'}</span>}
                                   <span className="text-gray-600">{q.replace(/^Q\d\s/, '')}</span>
                                 </span>
                               ))}
@@ -430,7 +617,6 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
                               <audio controls src={r['Recording URL']} className="h-8 w-full max-w-md" />
                             </div>
                           )}
-                          {/* Signals row */}
                           <div className="flex flex-wrap gap-2">
                             {r['Hot Lead'] && <Chip text="Hot Lead" className="bg-red-100 text-red-700" />}
                             {r['Loan Signal'] && <Chip text="Loan Signal" className="bg-purple-100 text-purple-700" />}
@@ -447,15 +633,20 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
             </tbody>
           </table>
         </div>
-        {/* Load more */}
         {visibleCount < filtered.length && (
           <div className="p-4 text-center">
             <button
-              onClick={() => setVisibleCount(v => v + 50)}
+              onClick={() => setVisibleCount(v => v + (isMultiDay ? 100 : 50))}
               className="px-4 py-2 text-xs font-medium rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors"
             >
-              Load 50 more ({filtered.length - visibleCount} remaining)
+              Load {isMultiDay ? 100 : 50} more ({(filtered.length - visibleCount).toLocaleString()} remaining)
             </button>
+          </div>
+        )}
+        {/* Showing X of Y for multi-day */}
+        {isMultiDay && (
+          <div className="px-4 pb-3 text-xs text-gray-400 text-center">
+            Showing {Math.min(visibleCount, filtered.length).toLocaleString()} of {filtered.length.toLocaleString()} calls
           </div>
         )}
       </div>

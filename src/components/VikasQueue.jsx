@@ -156,6 +156,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
       <div>
         <h2 className="text-lg font-bold text-gray-900">Vikas — Action Queue</h2>
         <p className="text-sm text-gray-500">Callbacks + QA Review + Coaching</p>
+        <p className="text-[10px] text-gray-400 mt-0.5">Action queues always show today's data</p>
       </div>
 
       {/* Callbacks Requested (Gemini-detected) */}

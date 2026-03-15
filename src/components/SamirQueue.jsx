@@ -111,6 +111,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
       <div>
         <h2 className="text-lg font-bold text-gray-900">Samir — Action Queue</h2>
         <p className="text-sm text-gray-500">Callbacks · Leads · Loans · Churn</p>
+        <p className="text-[10px] text-gray-400 mt-0.5">Action queues always show today's data</p>
       </div>
 
       {/* CALLBACKS REQUESTED */}

@@ -33,13 +33,14 @@ function mapRecord(r) {
   return rec;
 }
 
-// ── 5-minute cache ──
-const CACHE_TTL = 5 * 60 * 1000;
+// ── Cache with variable TTL ──
+const CACHE_TTL_TODAY = 5 * 60 * 1000;    // 5 min for today
+const CACHE_TTL_HISTORICAL = 10 * 60 * 1000; // 10 min for historical
 const _cache = {};
 
-function getCached(key) {
+function getCached(key, ttl) {
   const entry = _cache[key];
-  if (entry && Date.now() - entry.ts < CACHE_TTL) return entry.data;
+  if (entry && Date.now() - entry.ts < (ttl || CACHE_TTL_TODAY)) return entry.data;
   return null;
 }
 
@@ -111,6 +112,24 @@ export async function fetchChurnSignals() {
 
 export async function fetchCallbacksRequested() {
   return fetchCached('callbacksRequested', '{Callback Requested}=1');
+}
+
+// ── Fetch records for arbitrary date range ──
+export async function fetchRecordsForPeriod(startDate, endDate, onProgress = null) {
+  const cacheKey = `period_${startDate}_${endDate}`;
+  const isToday = startDate === endDate && startDate === new Date().toISOString().slice(0, 10);
+  const ttl = isToday ? CACHE_TTL_TODAY : CACHE_TTL_HISTORICAL;
+  const cached = getCached(cacheKey, ttl);
+  if (cached) {
+    if (onProgress) onProgress({ loaded: cached.length });
+    return cached;
+  }
+  const formula = startDate === endDate
+    ? `IS_SAME({Call Date}, '${startDate}', 'day')`
+    : `AND({Call Date}>='${startDate}', {Call Date}<='${endDate}')`;
+  const data = await fetchAll(formula, onProgress);
+  setCache(cacheKey, data);
+  return data;
 }
 
 export function getLastScrapedTime(records) {
