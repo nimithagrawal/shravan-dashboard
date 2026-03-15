@@ -78,39 +78,86 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
 
   const toggle = (key) => setExpanded(expanded === key ? null : key);
 
-  // Callbacks Requested (from Gemini sentiment)
-  const sortedCallbacksReq = useMemo(() =>
-    [...callbacksRequested].sort((a, b) => (b['Call Date'] || '').localeCompare(a['Call Date'] || '')),
-    [callbacksRequested]
-  );
-
-  // SECTION A: Callback Queue
-  const sortedCallbacks = useMemo(() => {
+  // Callbacks Requested — merge Needs Callback + Callback Requested, dedup by ID
+  const sortedCallbacksReq = useMemo(() => {
+    const seen = new Set();
+    const merged = [];
+    [...callbacks, ...callbacksRequested].forEach(r => {
+      if (!seen.has(r.id)) { seen.add(r.id); merged.push(r); }
+    });
     const prio = { Urgent: 0, High: 1, Normal: 2 };
-    return [...callbacks].sort((a, b) => {
+    return merged.sort((a, b) => {
       const pa = prio[a['Callback Priority']] ?? 2;
       const pb = prio[b['Callback Priority']] ?? 2;
       if (pa !== pb) return pa - pb;
       return (b['Call Date'] || '').localeCompare(a['Call Date'] || '');
     });
-  }, [callbacks]);
+  }, [callbacks, callbacksRequested]);
 
-  const handleMarkCalled = async (r) => {
+  // Retry Queue — unreachable calls NOT in callbacks
+  const retryQueue = useMemo(() => {
+    const cbIds = new Set([...callbacks, ...callbacksRequested].map(r => r.id));
+    return today.filter(r => r['Conversion Signal'] === 'Unreachable' && !cbIds.has(r.id));
+  }, [today, callbacks, callbacksRequested]);
+
+  const retryByAgent = useMemo(() => {
+    const map = {};
+    retryQueue.forEach(r => {
+      const agent = r['Agent Name'] || 'Unknown';
+      if (!map[agent]) map[agent] = 0;
+      map[agent]++;
+    });
+    return Object.entries(map).sort((a, b) => b[1] - a[1]);
+  }, [retryQueue]);
+
+  // Deduplicate retry queue by mobile number (FIX 8)
+  const uniqueRetryMobiles = useMemo(() => {
+    const mobiles = new Set();
+    retryQueue.forEach(r => { if (r['Mobile Number']) mobiles.add(String(r['Mobile Number'])); });
+    return mobiles.size;
+  }, [retryQueue]);
+
+  // Q2 Compliance stats (FIX 7)
+  const q2Stats = useMemo(() => {
+    const wcalls = today.filter(r => {
+      const cat = r.callCategory || r['Call Disposition'];
+      const fw = r.evaluationFramework || r['Evaluation Framework'];
+      return (cat === 'Welcome-Call' || fw === 'Welcome-Call-QA') && (r['Duration Seconds'] || 0) > 45;
+    });
+    if (wcalls.length === 0) return null;
+    const q2Fails = wcalls.filter(r => !r['Q2 Cashback Correct']).length;
+    const failRate = Math.round((q2Fails / wcalls.length) * 100);
+    return { total: wcalls.length, fails: q2Fails, failRate };
+  }, [today]);
+
+  const handleCallbackDone = async (r) => {
     try {
-      await patchRecord(r.id, { 'Needs Callback': false });
+      const patch = {};
+      if (r['Needs Callback']) patch['Needs Callback'] = false;
+      if (r['Callback Requested']) patch['Callback Requested'] = false;
+      if (Object.keys(patch).length === 0) patch['Needs Callback'] = false;
+      await patchRecord(r.id, patch);
       onRemove('callbacks', r.id);
+      onRemove('callbacksRequested', r.id);
     } catch (e) {
       alert('Failed: ' + e.message);
     }
   };
 
-  const handleCallbackReqDone = async (r) => {
-    try {
-      await patchRecord(r.id, { 'Callback Requested': false });
-      onRemove('callbacksRequested', r.id);
-    } catch (e) {
-      alert('Failed: ' + e.message);
-    }
+  const exportRetryCSV = () => {
+    if (retryQueue.length === 0) return;
+    const headers = ['Mobile Number', 'Agent', 'Call Date', 'Call Time', 'Duration (s)', 'Attempts'];
+    const rows = retryQueue.map(r => [
+      r['Mobile Number'] || '', r['Agent Name'] || '', r['Call Date'] || '',
+      r['Call Time'] || '', r['Duration Seconds'] || 0, r['Attempt Number'] || 1,
+    ]);
+    const csv = [headers.join(','), ...rows.map(r => r.map(v => `"${v}"`).join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `retry-queue-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   // SECTION B: QA Review — strict filter
@@ -265,10 +312,24 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
         <p className="text-[10px] text-gray-400 mt-0.5">Action queues always show today's data</p>
       </div>
 
-      {/* Callbacks Requested (Gemini-detected) */}
+      {/* Q2 Compliance Alert (FIX 7) */}
+      {q2Stats && q2Stats.failRate > 50 && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
+          <span className="text-2xl flex-shrink-0">&#x1F6A8;</span>
+          <div>
+            <p className="text-sm font-bold text-red-800">Q2 Cashback Compliance Alert</p>
+            <p className="text-xs text-red-700 mt-0.5">
+              {q2Stats.failRate}% of welcome calls ({q2Stats.fails}/{q2Stats.total}) gave incorrect cashback information.
+              Agents must state the correct cashback percentage per the plan document.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Callbacks Requested */}
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="flex items-center gap-2 p-4 pb-2">
-          <h3 className="text-sm font-semibold text-gray-700">Callbacks Requested (AI-detected)</h3>
+          <h3 className="text-sm font-semibold text-gray-700">Callbacks Requested</h3>
           {sortedCallbacksReq.length > 0 && (
             <span className="bg-amber text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{sortedCallbacksReq.length}</span>
           )}
@@ -308,7 +369,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                         <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ActionButton label="Done" onClick={() => handleCallbackReqDone(r)} />
+                          <ActionButton label="Done" onClick={() => handleCallbackDone(r)} />
                         </td>
                       </tr>
                       {expanded === key && <ExpandedRow r={r} colSpan={9} />}
@@ -395,65 +456,40 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
         </div>
       )}
 
-      {/* SECTION A: Callbacks Pending */}
+      {/* Retry Queue — unreachable calls summary (FIX 3B) */}
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="flex items-center gap-2 p-4 pb-2">
-          <h3 className="text-sm font-semibold text-gray-700">Callbacks Pending</h3>
-          {sortedCallbacks.length > 0 && (
-            <span className="bg-fail text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{sortedCallbacks.length}</span>
+          <h3 className="text-sm font-semibold text-gray-700">Retry Queue</h3>
+          {retryQueue.length > 0 && (
+            <span className="bg-gray-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{uniqueRetryMobiles}</span>
+          )}
+          {retryQueue.length > 0 && (
+            <button
+              onClick={exportRetryCSV}
+              className="ml-auto px-3 py-1 text-xs font-medium rounded-lg bg-info text-white hover:bg-blue-700 active:scale-95 transition-all"
+            >
+              Export List
+            </button>
           )}
         </div>
-        {sortedCallbacks.length === 0 ? (
-          <p className="px-4 py-8 text-center text-gray-400">All callbacks done for today</p>
+        {retryQueue.length === 0 ? (
+          <p className="px-4 py-8 text-center text-gray-400">No unreachable calls to retry</p>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
-                  <th className="px-4 py-2">Priority</th>
-                  <th className="px-4 py-2">Due</th>
-                  <th className="px-4 py-2">Mobile</th>
-                  <th className="px-4 py-2">Gist</th>
-                  <th className="px-4 py-2">Agent</th>
-                  <th className="px-4 py-2">Duration</th>
-                  <th className="px-4 py-2">Label</th>
-                  <th className="px-4 py-2 max-w-[200px]">Summary</th>
-                  <th className="px-4 py-2"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {sortedCallbacks.map(r => {
-                  const key = `cb-${r.id}`;
-                  const gist = computeGist(r);
-                  return (
-                    <Fragment key={r.id}>
-                      <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
-                        <td className="px-4 py-2">
-                          {r['Callback Priority'] === 'Urgent'
-                            ? <Chip text="Urgent" className="bg-red-600 text-white" />
-                            : r['Callback Priority'] === 'High'
-                            ? <Chip text="High" className="bg-orange-500 text-white" />
-                            : <Chip text="Normal" className="bg-gray-200 text-gray-700" />}
-                        </td>
-                        <td className="px-4 py-2">
-                          <Chip text={r['Callback Due'] || '--'} className="bg-gray-100 text-gray-700" />
-                        </td>
-                        <td className="px-4 py-2"><PhoneNumber number={r['Mobile Number']} /></td>
-                        <td className={`px-4 py-2 text-xs ${gistColor(gist)}`}>{gist}</td>
-                        <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
-                        <td className="px-4 py-2">{fmtDuration(r['Duration Seconds'])}</td>
-                        <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
-                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
-                        <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ActionButton label="Done" onClick={() => handleMarkCalled(r)} />
-                        </td>
-                      </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={9} />}
-                    </Fragment>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div className="px-4 pb-4">
+            <p className="text-sm text-gray-700 mb-3">
+              <span className="font-bold">{uniqueRetryMobiles}</span> unique numbers to retry tomorrow
+              {uniqueRetryMobiles !== retryQueue.length && (
+                <span className="text-gray-400 text-xs ml-1">({retryQueue.length} total attempts)</span>
+              )}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {retryByAgent.map(([agent, count]) => (
+                <div key={agent} className="bg-gray-50 border border-gray-200 rounded-lg px-3 py-2 text-xs">
+                  <span className="font-semibold text-gray-700">{agent}</span>
+                  <span className="text-gray-500 ml-1.5">{count}</span>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>

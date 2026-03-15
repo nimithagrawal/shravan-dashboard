@@ -85,7 +85,7 @@ function SectionHeader({ title, emoji, count, badgeColor = 'bg-pass' }) {
   );
 }
 
-export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested = [], transactionIntents = [], onRemove, onRefresh }) {
+export default function SamirQueue({ today = [], hotLeads, loans, churn, callbacksRequested = [], transactionIntents = [], onRemove, onRefresh }) {
   const [doneIds, setDoneIds] = useState(new Set());
   const [expanded, setExpanded] = useState(null);
 
@@ -98,21 +98,37 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
     }, 1500);
   };
 
-  // Transaction Signals: Sentiment DESC, then Duration DESC
+  // Transaction Signals: exclude Complaints + short calls (<30s) (FIX 5A)
   const sortedTransactions = useMemo(() =>
-    [...transactionIntents].sort((a, b) => {
-      const sentDiff = (b['Customer Sentiment Score'] || 0) - (a['Customer Sentiment Score'] || 0);
-      if (sentDiff !== 0) return sentDiff;
-      return (b['Duration Seconds'] || 0) - (a['Duration Seconds'] || 0);
-    }),
+    [...transactionIntents]
+      .filter(r => {
+        const label = (r['Call Label'] || '').toLowerCase();
+        if (label === 'complaint') return false;
+        if ((r['Duration Seconds'] || 0) < 30) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const sentDiff = (b['Customer Sentiment Score'] || 0) - (a['Customer Sentiment Score'] || 0);
+        if (sentDiff !== 0) return sentDiff;
+        return (b['Duration Seconds'] || 0) - (a['Duration Seconds'] || 0);
+      }),
     [transactionIntents]
   );
 
-  // Webinar Leads (formerly Hot Leads): sentiment score DESC
-  const sortedLeads = useMemo(() =>
-    [...hotLeads].sort((a, b) => (b['Customer Sentiment Score'] || 0) - (a['Customer Sentiment Score'] || 0)),
-    [hotLeads]
+  // Complaints section — all records with Call Label = 'Complaint' (FIX 5B)
+  const complaints = useMemo(() =>
+    today.filter(r => (r['Call Label'] || '') === 'Complaint')
+      .sort((a, b) => (b['Customer Sentiment Score'] || 0) - (a['Customer Sentiment Score'] || 0)),
+    [today]
   );
+
+  // Webinar Leads: exclude Transaction Intent records (FIX 5C)
+  const sortedLeads = useMemo(() => {
+    const txIds = new Set(transactionIntents.map(r => r.id));
+    return [...hotLeads]
+      .filter(r => !txIds.has(r.id))
+      .sort((a, b) => (b['Customer Sentiment Score'] || 0) - (a['Customer Sentiment Score'] || 0));
+  }, [hotLeads, transactionIntents]);
 
   // Loans: Days Since Purchase ASC (most recent purchase first = most time-sensitive)
   const sortedLoans = useMemo(() =>
@@ -167,11 +183,18 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
     } catch (e) { alert('Failed: ' + e.message); }
   };
 
+  const handleComplaintResolved = async (r) => {
+    try {
+      await patchRecord(r.id, { 'Call Label': 'Engaged' });
+      // No onRemove needed — complaints are derived from today[] which is immutable within session
+    } catch (e) { alert('Failed: ' + e.message); }
+  };
+
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-bold text-gray-900">Samir — Action Queue</h2>
-        <p className="text-sm text-gray-500">Transaction Signals · Webinar Leads · Loans · Churn · Callbacks</p>
+        <p className="text-sm text-gray-500">Transaction Signals · Complaints · Webinar Leads · Loans · Churn · Callbacks</p>
         <p className="text-[10px] text-gray-400 mt-0.5">Action queues always show today's data</p>
       </div>
 
@@ -236,6 +259,62 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
           </div>
         )}
       </div>
+
+      {/* COMPLAINTS — escalation items (FIX 5B) */}
+      {complaints.length > 0 && (
+        <div className="bg-card rounded-xl shadow-sm border border-red-200 overflow-hidden">
+          <SectionHeader title="Complaints" emoji="" count={complaints.length} badgeColor="bg-fail" />
+          <p className="px-4 text-[10px] text-gray-400 -mt-1 pb-2">Calls labeled as Complaint — need escalation or resolution</p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
+                  <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Agent</th>
+                  <th className="px-4 py-2">Time</th>
+                  <th className="px-4 py-2">Duration</th>
+                  <th className="px-4 py-2">Sentiment</th>
+                  <th className="px-4 py-2">Objection</th>
+                  <th className="px-4 py-2 max-w-[200px]">Summary</th>
+                  <th className="px-4 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {complaints.map(r => {
+                  const key = `cmp-${r.id}`;
+                  return (
+                    <Fragment key={r.id}>
+                      <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
+                        <td className="px-4 py-2"><PhoneNumber number={r['Mobile Number']} /></td>
+                        <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
+                        <td className="px-4 py-2">{fmtDuration(r['Duration Seconds'])}</td>
+                        <td className="px-4 py-2">
+                          {r['Customer Sentiment Score'] != null ? (
+                            <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
+                          ) : '--'}
+                        </td>
+                        <td className="px-4 py-2 text-xs">{r['Customer Objection'] || r['Churn Reason'] || '--'}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
+                        <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
+                          <ActionButton
+                            label="Resolved"
+                            onClick={() => markDone(r.id, () => handleComplaintResolved(r))}
+                            color="bg-fail"
+                            recordId={r.id}
+                            doneIds={doneIds}
+                          />
+                        </td>
+                      </tr>
+                      {expanded === key && <ExpandedRow r={r} colSpan={8} />}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* WEBINAR LEADS (formerly Hot Leads) — agent conversion metric */}
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">

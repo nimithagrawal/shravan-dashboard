@@ -13,11 +13,12 @@ import {
 import { ExpandableSummary, TranscriptViewer } from './SharedUI';
 import PhoneNumber from './PhoneNumber';
 
-function KpiCard({ label, value, color, badge, comparison }) {
+function KpiCard({ label, value, color, badge, comparison, subtitle }) {
   return (
     <div className="bg-card rounded-xl p-4 shadow-sm border border-gray-100 relative">
       <p className="text-xs text-gray-500 mb-1">{label}</p>
       <p className={`text-2xl font-bold ${color || 'text-gray-900'}`}>{value}</p>
+      {subtitle && <p className="text-[10px] text-gray-400 mt-0.5">{subtitle}</p>}
       {badge != null && badge > 0 && (
         <span className="absolute top-2 right-2 bg-fail text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{badge}</span>
       )}
@@ -41,7 +42,7 @@ function pctChange(curr, prev) {
   return Math.round(((curr - prev) / prev) * 100);
 }
 
-export default function Overview({ records, prevRecords = [], period, periodStart, periodEnd, agentFilter, setAgentFilter }) {
+export default function Overview({ records, prevRecords = [], period, periodStart, periodEnd, agentFilter, setAgentFilter, onRefresh }) {
   const [expanded, setExpanded] = useState(null);
   const [search, setSearch] = useState('');
   const [filterAgent, setFilterAgent] = useState('');
@@ -72,6 +73,17 @@ export default function Overview({ records, prevRecords = [], period, periodStar
     })),
     [records]
   );
+
+  // Duplicate mobile detection (FIX 8)
+  const mobileCounts = useMemo(() => {
+    const counts = {};
+    enriched.forEach(r => {
+      const m = String(r['Mobile Number'] || '');
+      if (m) counts[m] = (counts[m] || 0) + 1;
+    });
+    return counts;
+  }, [enriched]);
+  const uniqueSubscribers = Object.keys(mobileCounts).length;
 
   // Previous period enriched (for comparison)
   const prevEnriched = useMemo(() =>
@@ -497,6 +509,30 @@ export default function Overview({ records, prevRecords = [], period, periodStar
 
   const hasFilters = effectiveAgentFilter || filterOutcome || filterTag || filterCategory || filterTimeRange || filterCallbackDue || search;
 
+  // FIX 9: Zero-calls messaging
+  if (total === 0) {
+    return (
+      <div className="text-center py-20">
+        <p className="text-lg text-gray-500">No calls processed yet {isToday ? 'today' : 'for this period'}</p>
+        {prevTotal > 0 && isToday && (
+          <div className="mt-3 text-sm text-gray-400">
+            <p>Yesterday: {prevTotal} calls, {prevHumanPickups} connected ({prevPickupRate}% pickup rate)</p>
+            <p className="text-xs mt-1">{fmtTalkTime(prevTalkTime)} total talk time</p>
+          </div>
+        )}
+        {onRefresh && (
+          <button
+            onClick={onRefresh}
+            className="mt-4 px-4 py-2 bg-info text-white rounded-lg text-sm font-medium hover:bg-blue-700 active:scale-95 transition-all min-h-[44px]"
+          >
+            Refresh Now
+          </button>
+        )}
+        <p className="text-[10px] text-gray-300 mt-4">Scraper runs every 30 minutes Mon-Sat 9:30 AM - 7 PM IST</p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6">
       {/* Summary Stats Row */}
@@ -506,7 +542,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
 
       {/* A) KPI Strip */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-        <KpiCard label="Total Calls" value={total.toLocaleString()} comparison={cmpTotal} />
+        <KpiCard label="Total Calls" value={total.toLocaleString()} comparison={cmpTotal} subtitle={uniqueSubscribers !== total ? `${uniqueSubscribers} unique subscribers` : null} />
         <KpiCard label="Human Pickup Rate" value={`${humanPickupRate}%`} color={kpiColor(humanPickupRate, 25, 15)} comparison={cmpPickup} />
         {isMultiDay ? (
           <KpiCard label="Avg Daily Calls" value={avgDailyCalls} />
@@ -1090,7 +1126,12 @@ export default function Overview({ records, prevRecords = [], period, periodStar
                     )}
                     <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Time'] || '--'}</td>
                     <td className="px-4 py-2 text-xs">{r['Agent Name'] || '--'}</td>
-                    <td className="px-4 py-2"><PhoneNumber number={r['Mobile Number']} /></td>
+                    <td className="px-4 py-2">
+                      <PhoneNumber number={r['Mobile Number']} />
+                      {mobileCounts[String(r['Mobile Number'] || '')] > 1 && (
+                        <span className="ml-1 text-[9px] font-bold text-gray-400">&times;{mobileCounts[String(r['Mobile Number'] || '')]}</span>
+                      )}
+                    </td>
                     <td className="px-4 py-2 font-mono text-xs">{fmtDuration(r['Duration Seconds'])}</td>
                     <td className="px-4 py-2"><Chip text={r['Call Outcome'] || '--'} className={outcomeColor(r['Call Outcome'])} /></td>
                     <td className="px-4 py-2">

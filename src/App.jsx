@@ -235,11 +235,12 @@ export default function App() {
                   periodEnd={periodEnd}
                   agentFilter={agentFilter}
                   setAgentFilter={setAgentFilter}
+                  onRefresh={() => refresh(true)}
                 />
               )
             )}
             {tab === 1 && <VikasQueue today={data.today} callbacks={data.callbacks} callbacksRequested={data.callbacksRequested} onRemove={removeRecord} onRefresh={refresh} />}
-            {tab === 2 && <SamirQueue hotLeads={data.hotLeads} loans={data.loans} churn={data.churn} callbacksRequested={data.callbacksRequested} transactionIntents={data.transactionIntents} onRemove={removeRecord} onRefresh={refresh} />}
+            {tab === 2 && <SamirQueue today={data.today} hotLeads={data.hotLeads} loans={data.loans} churn={data.churn} callbacksRequested={data.callbacksRequested} transactionIntents={data.transactionIntents} onRemove={removeRecord} onRefresh={refresh} />}
           </>
         )}
       </main>
