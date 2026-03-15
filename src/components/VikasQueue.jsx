@@ -65,8 +65,9 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
         if (!isWelcome) return false;
         const dur = r['Duration Seconds'];
         if (dur == null || dur <= 45) return false;
-        const transcript = r['Transcript'];
-        if (!transcript || transcript === 'failed' || transcript.trim() === '') return false;
+        const transcript = (r['Transcript'] || '').trim();
+        const STT_FAILED = ['[STT Failed]', '[STT Failed — audio could not be processed]', 'failed', ''];
+        if (!transcript || STT_FAILED.includes(transcript)) return false;
         return true;
       })
       .map(r => ({
