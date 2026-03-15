@@ -124,9 +124,8 @@ export async function fetchRecordsForPeriod(startDate, endDate, onProgress = nul
     if (onProgress) onProgress({ loaded: cached.length });
     return cached;
   }
-  const formula = startDate === endDate
-    ? `IS_SAME({Call Date}, '${startDate}', 'day')`
-    : `AND({Call Date}>='${startDate}', {Call Date}<='${endDate}')`;
+  // Always use range formula — IS_SAME with string dates doesn't work in Airtable
+  const formula = `AND({Call Date}>='${startDate}', {Call Date}<='${endDate}')`;
   const data = await fetchAll(formula, onProgress);
   setCache(cacheKey, data);
   return data;
