@@ -86,6 +86,22 @@ export function callCategoryColor(cat) {
   return 'bg-gray-200 text-gray-600';
 }
 
+export function callLabelColor(label) {
+  const map = {
+    'Lab Lead': 'bg-purple-100 text-purple-700',
+    'Med Reorder': 'bg-green-100 text-green-700',
+    'Doc Consult': 'bg-blue-100 text-blue-700',
+    'Surgery/Hosp': 'bg-red-100 text-red-700',
+    'Cashback Issue': 'bg-orange-100 text-orange-700',
+    'Order Complaint': 'bg-yellow-100 text-yellow-700',
+    'Loan Need': 'bg-pink-100 text-pink-700',
+    'Activation': 'bg-teal-100 text-teal-700',
+    'Webinar Confirm': 'bg-gray-200 text-gray-600',
+    'Info Only': 'bg-gray-100 text-gray-500',
+  };
+  return map[label] || 'bg-gray-100 text-gray-500';
+}
+
 export function maskPhone(num) {
   if (!num) return '--';
   const s = String(num).replace(/\D/g, '');

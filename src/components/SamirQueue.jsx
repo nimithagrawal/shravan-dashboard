@@ -1,6 +1,7 @@
 import { useState, useMemo, Fragment } from 'react';
 import { patchRecord } from '../lib/airtable';
-import { truncate, sentimentScoreColor, fmtDuration, computeGist, gistColor, subscriberType, subscriberTypeColor } from '../lib/helpers';
+import { sentimentScoreColor, fmtDuration, computeGist, gistColor, subscriberType, subscriberTypeColor, callLabelColor } from '../lib/helpers';
+import { ExpandableSummary, TranscriptViewer } from './SharedUI';
 import PhoneNumber from './PhoneNumber';
 
 function Chip({ text, className }) {
@@ -36,10 +37,22 @@ function ActionButton({ label, onClick, color = 'bg-pass', recordId, doneIds }) 
 }
 
 function ExpandedRow({ r, colSpan }) {
+  const label = r['Call Label'];
   return (
     <tr className="bg-gray-50">
       <td colSpan={colSpan} className="px-4 py-4">
         <div className="grid gap-3 text-xs max-w-4xl">
+          {/* Call Label + meta at top */}
+          <div className="flex flex-wrap items-center gap-2">
+            {label && <Chip text={label} className={callLabelColor(label)} />}
+            {r['Call Outcome'] && <span className="text-gray-500">Outcome: {r['Call Outcome']}</span>}
+            {r['Conversion Signal'] && <span className="text-gray-500">Signal: {r['Conversion Signal']}</span>}
+            {r['Customer Intent Signal'] && <span className="text-gray-500">Intent: {r['Customer Intent Signal']}</span>}
+            {r['Customer Objection'] && <span className="text-gray-500">Objection: {r['Customer Objection']}</span>}
+            {r['Attempt Number'] && <span className="text-gray-500">Attempt: {r['Attempt Number']}</span>}
+            {r['Days Since Purchase'] != null && <span className="text-gray-500">Days Since Purchase: {r['Days Since Purchase']}</span>}
+            {r['Bureau Score at Call'] && <span className="text-gray-500">Bureau: {r['Bureau Score at Call']}</span>}
+          </div>
           {r['Summary'] && (
             <div>
               <p className="font-semibold text-gray-600">Summary</p>
@@ -48,8 +61,8 @@ function ExpandedRow({ r, colSpan }) {
           )}
           {r['Transcript'] && (
             <div>
-              <p className="font-semibold text-gray-600">Transcript</p>
-              <div className="max-h-40 overflow-y-auto bg-white p-2 rounded border text-gray-700 whitespace-pre-wrap">{r['Transcript']}</div>
+              <p className="font-semibold text-gray-600 mb-1">Transcript</p>
+              <TranscriptViewer transcript={r['Transcript']} agentName={r['Agent Name']} />
             </div>
           )}
           {r['Recording URL'] && (
@@ -57,15 +70,6 @@ function ExpandedRow({ r, colSpan }) {
               <audio controls src={r['Recording URL']} className="h-8 w-full max-w-md" />
             </div>
           )}
-          <div className="flex flex-wrap gap-2 text-xs text-gray-500">
-            {r['Call Outcome'] && <span>Outcome: {r['Call Outcome']}</span>}
-            {r['Conversion Signal'] && <span>Signal: {r['Conversion Signal']}</span>}
-            {r['Customer Intent Signal'] && <span>Intent: {r['Customer Intent Signal']}</span>}
-            {r['Customer Objection'] && <span>Objection: {r['Customer Objection']}</span>}
-            {r['Attempt Number'] && <span>Attempt: {r['Attempt Number']}</span>}
-            {r['Days Since Purchase'] != null && <span>Days Since Purchase: {r['Days Since Purchase']}</span>}
-            {r['Bureau Score at Call'] && <span>Bureau: {r['Bureau Score at Call']}</span>}
-          </div>
         </div>
       </td>
     </tr>
@@ -210,7 +214,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                             <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
                           ) : '--'}
                         </td>
-                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
                           <ActionButton
                             label="Initiate Outreach"
@@ -277,7 +281,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                         <td className="px-4 py-2 font-mono">{r['Bureau Score at Call'] || '--'}</td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                         <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
-                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
                           <ActionButton
                             label="Followed Up"
@@ -343,7 +347,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                         <td className="px-4 py-2 font-mono">{r['Bureau Score at Call'] || '--'}</td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                         <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'}</td>
-                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
                           <ActionButton
                             label="Initiate Loan"
@@ -414,7 +418,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                         <td className="px-4 py-2 font-mono">{r['Days Since Purchase'] ?? '--'}</td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                         <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'}</td>
-                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
                           <ActionButton
                             label="Recovered"
@@ -477,7 +481,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                         <td className="px-4 py-2 text-xs">{r['Customer Objection'] || '--'}</td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                         <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
-                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
                           <ActionButton
                             label="Called Back"

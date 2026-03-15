@@ -1,6 +1,7 @@
 import { useState, useMemo, Fragment } from 'react';
 import { patchRecord } from '../lib/airtable';
-import { qaScore, qaRating, fmtDuration, ratingColor, truncate, computeQAFailureReason, isHumanPickup, kpiColor, computeGist, gistColor, extractScheduledCallback, formatCallbackDue, callbackDueColor, subscriberType, subscriberTypeColor } from '../lib/helpers';
+import { qaScore, qaRating, fmtDuration, ratingColor, computeQAFailureReason, isHumanPickup, kpiColor, computeGist, gistColor, extractScheduledCallback, formatCallbackDue, callbackDueColor, subscriberType, subscriberTypeColor, callLabelColor } from '../lib/helpers';
+import { ExpandableSummary, TranscriptViewer } from './SharedUI';
 import PhoneNumber from './PhoneNumber';
 
 function Chip({ text, className }) {
@@ -20,10 +21,19 @@ function ActionButton({ label, onClick }) {
 
 function ExpandedRow({ r, colSpan }) {
   const QA_LABELS = ['Q1 User Agent Screened', 'Q2 Cashback Correct', 'Q3 WA Link Sent', 'Q4 Hi Attempt Made', 'Q5 Cashback Mechanic Explained', 'Q6 No Improvised Claims'];
+  const label = r['Call Label'];
   return (
     <tr className="bg-gray-50">
       <td colSpan={colSpan} className="px-4 py-4">
         <div className="grid gap-3 text-xs max-w-4xl">
+          {/* Call Label + meta at top */}
+          <div className="flex flex-wrap items-center gap-2">
+            {label && <Chip text={label} className={callLabelColor(label)} />}
+            {r['Call Outcome'] && <span className="text-gray-500">Outcome: {r['Call Outcome']}</span>}
+            {r['Conversion Signal'] && <span className="text-gray-500">Signal: {r['Conversion Signal']}</span>}
+            {r['Customer Intent Signal'] && <span className="text-gray-500">Intent: {r['Customer Intent Signal']}</span>}
+            {r['Attempt Number'] && <span className="text-gray-500">Attempt: {r['Attempt Number']}</span>}
+          </div>
           {r['Summary'] && (
             <div>
               <p className="font-semibold text-gray-600">Summary</p>
@@ -32,8 +42,8 @@ function ExpandedRow({ r, colSpan }) {
           )}
           {r['Transcript'] && (
             <div>
-              <p className="font-semibold text-gray-600">Transcript</p>
-              <div className="max-h-40 overflow-y-auto bg-white p-2 rounded border text-gray-700 whitespace-pre-wrap">{r['Transcript']}</div>
+              <p className="font-semibold text-gray-600 mb-1">Transcript</p>
+              <TranscriptViewer transcript={r['Transcript']} agentName={r['Agent Name']} />
             </div>
           )}
           {r['Recording URL'] && (
@@ -41,12 +51,6 @@ function ExpandedRow({ r, colSpan }) {
               <audio controls src={r['Recording URL']} className="h-8 w-full max-w-md" />
             </div>
           )}
-          <div className="flex flex-wrap gap-2 text-xs text-gray-500">
-            {r['Call Outcome'] && <span>Outcome: {r['Call Outcome']}</span>}
-            {r['Conversion Signal'] && <span>Signal: {r['Conversion Signal']}</span>}
-            {r['Customer Intent Signal'] && <span>Intent: {r['Customer Intent Signal']}</span>}
-            {r['Attempt Number'] && <span>Attempt: {r['Attempt Number']}</span>}
-          </div>
           {/* QA for welcome calls */}
           {(r.callCategory === 'Welcome-Call' || r.evaluationFramework === 'Welcome-Call-QA') && (
             <div>
@@ -300,7 +304,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                         <td className="px-4 py-2 whitespace-nowrap">{r['Call Time'] || '--'}</td>
                         <td className="px-4 py-2">{fmtDuration(r['Duration Seconds'])}</td>
-                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
                           <ActionButton label="Done" onClick={() => handleCallbackReqDone(r)} />
                         </td>
@@ -375,7 +379,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                         <td className="px-4 py-2 whitespace-nowrap text-xs">
                           {r['Call Date'] ? new Date(r['Call Date'] + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '--'}
                         </td>
-                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                       </tr>
                       {expanded === key && <ExpandedRow r={r} colSpan={7} />}
                     </Fragment>
@@ -433,7 +437,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                         <td className={`px-4 py-2 text-xs ${gistColor(gist)}`}>{gist}</td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                         <td className="px-4 py-2">{fmtDuration(r['Duration Seconds'])}</td>
-                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
                           <ActionButton label="Done" onClick={() => handleMarkCalled(r)} />
                         </td>
@@ -498,7 +502,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                             ))}
                           </div>
                         </td>
-                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                       </tr>
                       {expanded === key && <ExpandedRow r={r} colSpan={9} />}
                     </Fragment>
@@ -531,6 +535,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Rating</th>
+                  <th className="px-4 py-2">Label</th>
                   <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Agent</th>
                   <th className="px-4 py-2">Time</th>
@@ -547,6 +552,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                     <Fragment key={r.id}>
                       <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
                         <td className="px-4 py-2"><Chip text={r._qr} className={ratingColor(r._qr)} /></td>
+                        <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className={`px-4 py-2 text-xs ${gistColor(r._gist)}`}>{r._gist}</td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                         <td className="px-4 py-2 whitespace-nowrap">{r['Call Time'] || '--'}</td>
@@ -560,14 +566,14 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                           </div>
                         </td>
                         <td className="px-4 py-2 text-xs text-fail max-w-[200px]">{r._failReason || '--'}</td>
-                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2">
                           {r['Recording URL'] ? (
                             <a href={r['Recording URL']} target="_blank" rel="noopener" className="text-info text-xs underline" onClick={e => e.stopPropagation()}>Listen</a>
                           ) : '--'}
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={8} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={9} />}
                     </Fragment>
                   );
                 })}

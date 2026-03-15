@@ -3,13 +3,14 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recha
 import {
   qaScore, qaRating, fmtDuration, outcomeColor, ratingColor, kpiColor,
   sentimentDotColor, sentimentScoreColor, conversionSignalColor,
-  callCategoryColor,
+  callCategoryColor, callLabelColor,
   computeCallTag, callTagColor, isHumanPickup, isConnectedCall,
   truncate, maskPhone, intentChipColor,
   fmtTalkTime, fmtAvgTalkTime,
   subscriberType, subscriberTypeColor, pitchQualityIssue,
   extractScheduledCallback, formatCallbackDue, callbackDueColor,
 } from '../lib/helpers';
+import { ExpandableSummary, TranscriptViewer } from './SharedUI';
 import PhoneNumber from './PhoneNumber';
 
 function KpiCard({ label, value, color, badge, comparison }) {
@@ -1063,12 +1064,13 @@ export default function Overview({ records, prevRecords = [], period, periodStar
                 <th className="px-4 py-2">Sent.</th>
                 <th className="px-4 py-2">Category</th>
                 <th className="px-4 py-2">CB Due</th>
+                <th className="px-4 py-2">Label</th>
                 <th className="px-4 py-2">Summary</th>
               </tr>
             </thead>
             <tbody>
               {visible.length === 0 && (
-                <tr><td colSpan={isMultiDay ? 12 : 11} className="px-4 py-8 text-center text-gray-400">No calls match your filters</td></tr>
+                <tr><td colSpan={isMultiDay ? 13 : 12} className="px-4 py-8 text-center text-gray-400">No calls match your filters</td></tr>
               )}
               {visible.map((r, i) => (
                 <React.Fragment key={r.id || i}>
@@ -1106,14 +1108,20 @@ export default function Overview({ records, prevRecords = [], period, periodStar
                         <Chip text={formatCallbackDue(r._callbackWhen)} className={callbackDueColor(r._callbackWhen)} />
                       ) : <span className="text-gray-300">--</span>}
                     </td>
-                    <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'], 60)}</td>
+                    <td className="px-4 py-2">
+                      {r['Call Label'] ? (
+                        <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} />
+                      ) : <span className="text-gray-300">--</span>}
+                    </td>
+                    <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} limit={60} /></td>
                   </tr>
                   {expanded === i && (
                     <tr className="bg-gray-50">
-                      <td colSpan={isMultiDay ? 12 : 11} className="px-4 py-4">
+                      <td colSpan={isMultiDay ? 13 : 12} className="px-4 py-4">
                         <div className="grid gap-3 text-xs max-w-4xl">
-                          <div className="flex flex-wrap gap-4">
-                            <span>Tag: <Chip text={r._tag} className={callTagColor(r._tag)} /></span>
+                          <div className="flex flex-wrap gap-4 items-center">
+                            {r['Call Label'] && <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} />}
+                            <Chip text={r._tag} className={callTagColor(r._tag)} />
                           </div>
                           <div className="flex flex-wrap gap-4">
                             {r.callCategory && <span>Category: <Chip text={r.callCategory} className={callCategoryColor(r.callCategory)} /></span>}
@@ -1142,12 +1150,10 @@ export default function Overview({ records, prevRecords = [], period, periodStar
                               <p className="text-gray-700">{r['Summary']}</p>
                             </div>
                           )}
-                          {r['Transcript'] && (
-                            <div>
-                              <p className="font-semibold text-gray-600">Transcript</p>
-                              <div className="max-h-40 overflow-y-auto bg-white p-2 rounded border text-gray-700 whitespace-pre-wrap">{r['Transcript']}</div>
-                            </div>
-                          )}
+                          <div>
+                            <p className="font-semibold text-gray-600 mb-1">Transcript</p>
+                            <TranscriptViewer transcript={r['Transcript']} agentName={r['Agent Name']} />
+                          </div>
                           {r['Recording URL'] && (
                             <div>
                               <audio controls src={r['Recording URL']} className="h-8 w-full max-w-md" />
