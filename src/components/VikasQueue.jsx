@@ -59,7 +59,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
   const qaReview = useMemo(() => {
     return today
       .filter(r => {
-        const cat = r.callCategory || r['Call Category'];
+        const cat = r.callCategory || r['Call Disposition'];
         const fw = r.evaluationFramework || r['Evaluation Framework'];
         const isWelcome = cat === 'Welcome-Call' || fw === 'Welcome-Call-QA';
         if (!isWelcome) return false;
@@ -84,7 +84,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
   // Count welcome calls for context
   const welcomeCallCount = useMemo(() =>
     today.filter(r => {
-      const cat = r.callCategory || r['Call Category'];
+      const cat = r.callCategory || r['Call Disposition'];
       const fw = r.evaluationFramework || r['Evaluation Framework'];
       return cat === 'Welcome-Call' || fw === 'Welcome-Call-QA';
     }).length,
@@ -94,7 +94,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
   // Non-welcome counts for empty state context
   const nonWelcomeStats = useMemo(() => {
     const outbound = today.filter(r => {
-      const cat = r.callCategory || r['Call Category'];
+      const cat = r.callCategory || r['Call Disposition'];
       return cat && cat !== 'Welcome-Call';
     }).length;
     const unreachable = today.filter(r => r['Conversion Signal'] === 'Unreachable').length;
@@ -116,7 +116,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
         map[agent].totalSec += (r['Duration Seconds'] || 0);
       }
       // QA for welcome calls only
-      const cat = r.callCategory || r['Call Category'];
+      const cat = r.callCategory || r['Call Disposition'];
       const fw = r.evaluationFramework || r['Evaluation Framework'];
       if (cat === 'Welcome-Call' || fw === 'Welcome-Call-QA') {
         const qs = qaScore(r);

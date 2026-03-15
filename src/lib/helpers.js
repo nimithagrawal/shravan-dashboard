@@ -86,14 +86,6 @@ export function callCategoryColor(cat) {
   return 'bg-gray-200 text-gray-600';
 }
 
-export function callDispositionColor(disp) {
-  if (disp === 'Connected-Full') return 'bg-green-100 text-green-700';
-  if (disp === 'Connected-Short') return 'bg-yellow-100 text-amber';
-  if (disp === 'Voicemail' || disp === 'Busy' || disp === 'Not-Reachable' || disp === 'Switched-Off') return 'bg-blue-100 text-blue-700';
-  if (disp === 'Wrong-Number' || disp === 'Hung-Up-Immediately') return 'bg-red-100 text-red-700';
-  return 'bg-gray-100 text-gray-600';
-}
-
 export function maskPhone(num) {
   if (!num) return '--';
   const s = String(num).replace(/\D/g, '');
@@ -105,7 +97,9 @@ export function maskPhone(num) {
 
 /**
  * Priority-based call tag: HOT → CHURN → LOAN → CALL BACK → WARM → REJECTED
- * → VOICEMAIL → BUSY → SWITCHED OFF → FORWARDED → CANCELLED → NO CONNECT → COLD
+ * → CANCELLED → NO CONNECT → COLD
+ * NOTE: Real disposition values (Voicemail, Busy, etc.) are not populated by n8n,
+ * so we derive tags from Call Outcome + Conversion Signal only.
  */
 export function computeCallTag(r) {
   if (r['Hot Lead']) return 'HOT';
@@ -116,17 +110,10 @@ export function computeCallTag(r) {
   if (signal === 'warm') return 'WARM';
   const intent = r['Customer Intent Signal'];
   if (intent === 'Rejected' || signal === 'dead') return 'REJECTED';
-  const disp = r.callDisposition || r['Call Disposition'];
-  if (disp === 'Voicemail') return 'VOICEMAIL';
-  if (disp === 'Busy') return 'BUSY';
-  if (disp === 'Switched-Off') return 'SWITCHED OFF';
-  if (disp === 'Not-Reachable') return 'NO CONNECT';
-  if (disp === 'Forwarded') return 'FORWARDED';
   const outcome = r['Call Outcome'];
   if (outcome === 'Dropped') return 'CANCELLED';
   if (outcome === 'No-Answer') return 'NO CONNECT';
   if (signal === 'cold') return 'COLD';
-  // Connected but no signal
   if (outcome === 'Completed') return 'COLD';
   return 'COLD';
 }
@@ -139,10 +126,6 @@ export function callTagColor(tag) {
     'CALL BACK': 'bg-amber text-white',
     'WARM': 'bg-yellow-500 text-white',
     'REJECTED': 'bg-gray-700 text-white',
-    'VOICEMAIL': 'bg-blue-400 text-white',
-    'BUSY': 'bg-blue-300 text-white',
-    'SWITCHED OFF': 'bg-blue-200 text-blue-800',
-    'FORWARDED': 'bg-blue-100 text-blue-700',
     'CANCELLED': 'bg-gray-400 text-white',
     'NO CONNECT': 'bg-gray-300 text-gray-700',
     'COLD': 'bg-gray-200 text-gray-600',

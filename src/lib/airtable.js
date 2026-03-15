@@ -5,9 +5,12 @@ const API = `https://api.airtable.com/v0/${BASE}/${TABLE}`;
 const HEADERS = { Authorization: `Bearer ${PAT}` };
 
 // Field ID → stable camelCase alias (resilient to renames)
+// NOTE: Airtable field names are SWAPPED from their contents:
+//   "Call Disposition" (fldujucuK2u2W85gw) actually contains CATEGORY values (Welcome-Call, etc.)
+//   "Call Category" (fld68ebmlqwuEs86M) actually contains SUB-CATEGORY values
 const FIELD_ALIASES = {
-  'Call Disposition': 'callDisposition',   // fldujucuK2u2W85gw
-  'Call Category': 'callCategory',         // fld68ebmlqwuEs86M
+  'Call Disposition': 'callCategory',        // fldujucuK2u2W85gw — contains Welcome-Call, Outbound-Service-Followup, etc.
+  'Call Category': 'callSubCategory',        // fld68ebmlqwuEs86M — contains sub-category/activation values
   'Evaluation Framework': 'evaluationFramework', // fldXas5cpym8NThbe
 };
 

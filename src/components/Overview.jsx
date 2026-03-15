@@ -3,7 +3,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 
 import {
   qaScore, qaRating, fmtDuration, outcomeColor, ratingColor, kpiColor,
   sentimentDotColor, sentimentScoreColor, conversionSignalColor,
-  callCategoryColor, callDispositionColor,
+  callCategoryColor,
   computeCallTag, callTagColor, isHumanPickup, truncate, maskPhone,
   intentChipColor,
 } from '../lib/helpers';
@@ -35,6 +35,8 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
   const [filterTag, setFilterTag] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
   const [visibleCount, setVisibleCount] = useState(50);
+  const [sortField, setSortField] = useState('time');
+  const [sortDir, setSortDir] = useState('desc');
 
   // Apply agent filter from card click
   const effectiveAgentFilter = agentFilter || filterAgent;
@@ -149,8 +151,12 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
         (r['Mobile Number'] || '').toString().includes(q)
       );
     }
-    return rows.sort((a, b) => (b['Call Time'] || '').localeCompare(a['Call Time'] || ''));
-  }, [enriched, effectiveAgentFilter, filterOutcome, filterTag, filterCategory, search]);
+    const dir = sortDir === 'asc' ? 1 : -1;
+    if (sortField === 'duration') {
+      return [...rows].sort((a, b) => dir * ((a['Duration Seconds'] || 0) - (b['Duration Seconds'] || 0)));
+    }
+    return [...rows].sort((a, b) => dir * (a['Call Time'] || '').localeCompare(b['Call Time'] || ''));
+  }, [enriched, effectiveAgentFilter, filterOutcome, filterTag, filterCategory, search, sortField, sortDir]);
 
   const visible = filtered.slice(0, visibleCount);
 
@@ -167,6 +173,13 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
     setFilterCategory('');
     setAgentFilter(null);
   };
+
+  const toggleSort = (field) => {
+    if (sortField === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    else { setSortField(field); setSortDir('desc'); }
+  };
+
+  const sortArrow = (field) => sortField === field ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
 
   const hasFilters = effectiveAgentFilter || filterOutcome || filterTag || filterCategory || search;
 
@@ -332,10 +345,10 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
             <thead>
               <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                 <th className="px-4 py-2">Tag</th>
-                <th className="px-4 py-2">Time</th>
+                <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-800" onClick={() => toggleSort('time')}>Time{sortArrow('time')}</th>
                 <th className="px-4 py-2">Agent</th>
                 <th className="px-4 py-2">Mobile</th>
-                <th className="px-4 py-2">Duration</th>
+                <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-800" onClick={() => toggleSort('duration')}>Duration{sortArrow('duration')}</th>
                 <th className="px-4 py-2">Outcome</th>
                 <th className="px-4 py-2">Sent.</th>
                 <th className="px-4 py-2">Category</th>
@@ -379,7 +392,7 @@ export default function Overview({ today, agentFilter, setAgentFilter }) {
                         <div className="grid gap-3 text-xs max-w-4xl">
                           {/* Call details row */}
                           <div className="flex flex-wrap gap-4">
-                            <span>Disposition: <Chip text={r.callDisposition || '--'} className={callDispositionColor(r.callDisposition)} /></span>
+                            {r.callCategory && <span>Category: <Chip text={r.callCategory} className={callCategoryColor(r.callCategory)} /></span>}
                             {r.evaluationFramework && <span>Framework: <span className="font-medium">{r.evaluationFramework}</span></span>}
                             {r['Conversion Signal'] && <span>Signal: <Chip text={r['Conversion Signal']} className={conversionSignalColor(r['Conversion Signal'])} /></span>}
                             {r['Customer Intent Signal'] && <span>Intent: <Chip text={r['Customer Intent Signal']} className={intentChipColor(r['Customer Intent Signal'])} /></span>}
