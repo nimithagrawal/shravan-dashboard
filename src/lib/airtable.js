@@ -11,15 +11,45 @@ const FIELD_ALIASES = {
   'Evaluation Framework': 'evaluationFramework', // fldXas5cpym8NThbe
 };
 
+// Outcome normalization
+const OUTCOME_MAP = {
+  'cancel-Agent': 'Dropped',
+  'cancel-Customer': 'Dropped',
+};
+
 function mapRecord(r) {
   const rec = { id: r.id, ...r.fields };
   for (const [name, alias] of Object.entries(FIELD_ALIASES)) {
     rec[alias] = rec[name] ?? null;
   }
+  // Normalize outcomes
+  const raw = rec['Call Outcome'];
+  if (raw && OUTCOME_MAP[raw]) {
+    rec['Call Outcome'] = OUTCOME_MAP[raw];
+  }
   return rec;
 }
 
-async function fetchAll(formula = '') {
+// ── 5-minute cache ──
+const CACHE_TTL = 5 * 60 * 1000;
+const _cache = {};
+
+function getCached(key) {
+  const entry = _cache[key];
+  if (entry && Date.now() - entry.ts < CACHE_TTL) return entry.data;
+  return null;
+}
+
+function setCache(key, data) {
+  _cache[key] = { data, ts: Date.now() };
+}
+
+export function invalidateCache() {
+  for (const k of Object.keys(_cache)) delete _cache[k];
+}
+
+// ── Fetch with pagination + progress ──
+async function fetchAll(formula = '', onProgress = null) {
   let all = [];
   let offset = null;
   do {
@@ -32,43 +62,62 @@ async function fetchAll(formula = '') {
     const data = await res.json();
     all = all.concat(data.records || []);
     offset = data.offset;
+    if (onProgress) onProgress({ loaded: all.length });
   } while (offset);
   return all.map(mapRecord);
 }
 
+export async function fetchTodayWithProgress(onProgress) {
+  const cached = getCached('today');
+  if (cached) {
+    if (onProgress) onProgress({ loaded: cached.length });
+    return cached;
+  }
+  const data = await fetchAll("IS_SAME({Call Date}, TODAY(), 'day')", onProgress);
+  setCache('today', data);
+  return data;
+}
+
 export async function fetchToday() {
-  return fetchAll("IS_SAME({Call Date}, TODAY(), 'day')");
+  return fetchTodayWithProgress(null);
+}
+
+async function fetchCached(key, formula) {
+  const cached = getCached(key);
+  if (cached) return cached;
+  const data = await fetchAll(formula);
+  setCache(key, data);
+  return data;
 }
 
 export async function fetchCallbacks() {
-  return fetchAll('{Needs Callback}=1');
+  return fetchCached('callbacks', '{Needs Callback}=1');
 }
 
 export async function fetchHotLeads() {
-  return fetchAll('{Hot Lead}=1');
+  return fetchCached('hotLeads', '{Hot Lead}=1');
 }
 
 export async function fetchLoanSignals() {
-  return fetchAll('{Loan Signal}=1');
+  return fetchCached('loans', '{Loan Signal}=1');
 }
 
 export async function fetchChurnSignals() {
-  return fetchAll('{Churn Signal}=1');
+  return fetchCached('churn', '{Churn Signal}=1');
 }
 
 export async function fetchCallbacksRequested() {
-  return fetchAll('{Callback Requested}=1');
+  return fetchCached('callbacksRequested', '{Callback Requested}=1');
 }
 
-export async function fetchRecent(limit = 50) {
-  const params = new URLSearchParams();
-  params.set('pageSize', String(limit));
-  params.set('sort[0][field]', 'Processed At');
-  params.set('sort[0][direction]', 'desc');
-  const res = await fetch(`${API}?${params}`, { headers: HEADERS });
-  if (!res.ok) throw new Error(`Airtable ${res.status}`);
-  const data = await res.json();
-  return (data.records || []).map(mapRecord);
+export function getLastScrapedTime(records) {
+  if (!records || records.length === 0) return null;
+  let latest = null;
+  for (const r of records) {
+    const t = r['Processed At'];
+    if (t && (!latest || t > latest)) latest = t;
+  }
+  return latest;
 }
 
 export async function patchRecord(recordId, fields) {

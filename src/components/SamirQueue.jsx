@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { patchRecord } from '../lib/airtable';
 import { truncate, sentimentScoreColor } from '../lib/helpers';
 import PhoneNumber from './PhoneNumber';
@@ -20,13 +20,17 @@ function sentimentColor(s) {
   return 'bg-red-100 text-fail';
 }
 
-function ActionButton({ label, onClick, color = 'bg-pass' }) {
+function ActionButton({ label, onClick, color = 'bg-pass', recordId, doneIds }) {
+  const isDone = doneIds.has(recordId);
   return (
     <button
-      onClick={onClick}
-      className={`px-3 py-1 text-xs font-medium rounded-lg ${color} text-white hover:opacity-90 active:scale-95 transition-all whitespace-nowrap`}
+      onClick={isDone ? undefined : onClick}
+      disabled={isDone}
+      className={`px-3 py-1 text-xs font-medium rounded-lg text-white transition-all whitespace-nowrap min-h-[44px] md:min-h-0 ${
+        isDone ? 'bg-gray-300 cursor-default' : `${color} hover:opacity-90 active:scale-95`
+      }`}
     >
-      {label}
+      {isDone ? 'Done' : label}
     </button>
   );
 }
@@ -41,24 +45,36 @@ function SectionHeader({ title, emoji, count, badgeColor = 'bg-pass' }) {
 }
 
 export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested = [], onRemove, onRefresh }) {
-  // Sort hot leads by sentiment score descending
+  const [doneIds, setDoneIds] = useState(new Set());
+
+  const markDone = (id, action) => {
+    setDoneIds(prev => new Set(prev).add(id));
+    setTimeout(() => {
+      action();
+    }, 1500);
+  };
+
+  // Hot leads: sentiment score DESC
   const sortedLeads = useMemo(() =>
     [...hotLeads].sort((a, b) => (b['Customer Sentiment Score'] || 0) - (a['Customer Sentiment Score'] || 0)),
     [hotLeads]
   );
 
+  // Loans: Days Since Purchase ASC (most recent purchase first = most time-sensitive)
   const sortedLoans = useMemo(() =>
-    [...loans].sort((a, b) => (b['Call Date'] || '').localeCompare(a['Call Date'] || '')),
+    [...loans].sort((a, b) => (a['Days Since Purchase'] ?? 9999) - (b['Days Since Purchase'] ?? 9999)),
     [loans]
   );
 
+  // Churn: Prior Attempts DESC (most attempts = most at risk)
   const sortedChurn = useMemo(() =>
     [...churn].sort((a, b) => (b['Prior Call Attempts'] || 0) - (a['Prior Call Attempts'] || 0)),
     [churn]
   );
 
+  // Callbacks: Call Time ASC (earliest first)
   const sortedCallbacksReq = useMemo(() =>
-    [...callbacksRequested].sort((a, b) => (b['Call Date'] || '').localeCompare(a['Call Date'] || '')),
+    [...callbacksRequested].sort((a, b) => (a['Call Time'] || '').localeCompare(b['Call Time'] || '')),
     [callbacksRequested]
   );
 
@@ -99,7 +115,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
 
       {/* CALLBACKS REQUESTED */}
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-        <SectionHeader title="Callbacks Requested" emoji="📞" count={sortedCallbacksReq.length} badgeColor="bg-amber" />
+        <SectionHeader title="Callbacks Requested" emoji="" count={sortedCallbacksReq.length} badgeColor="bg-amber" />
         {sortedCallbacksReq.length === 0 ? (
           <p className="px-4 py-8 text-center text-gray-400">No callback requests</p>
         ) : (
@@ -107,7 +123,6 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
-                  <th className="px-4 py-2">Subscriber</th>
                   <th className="px-4 py-2">Mobile</th>
                   <th className="px-4 py-2">Sentiment</th>
                   <th className="px-4 py-2">Intent</th>
@@ -120,7 +135,6 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
               <tbody>
                 {sortedCallbacksReq.map(r => (
                   <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
-                    <td className="px-4 py-2">{r['Subscriber Name'] || '--'}</td>
                     <td className="px-4 py-2">
                       <PhoneNumber number={r['Mobile Number']} />
                     </td>
@@ -133,7 +147,15 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                     <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                     <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
                     <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
-                    <td className="px-4 py-2"><ActionButton label="✓ Called Back" onClick={() => handleCallbackDone(r)} color="bg-amber" /></td>
+                    <td className="px-4 py-2">
+                      <ActionButton
+                        label="Called Back"
+                        onClick={() => markDone(r.id, () => handleCallbackDone(r))}
+                        color="bg-amber"
+                        recordId={r.id}
+                        doneIds={doneIds}
+                      />
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -144,15 +166,14 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
 
       {/* HOT LEADS */}
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-        <SectionHeader title="Hot Leads" emoji="🟢" count={sortedLeads.length} badgeColor="bg-pass" />
+        <SectionHeader title="Hot Leads" emoji="" count={sortedLeads.length} badgeColor="bg-pass" />
         {sortedLeads.length === 0 ? (
-          <p className="px-4 py-8 text-center text-gray-400">No hot leads right now</p>
+          <p className="px-4 py-8 text-center text-gray-400">No hot leads today — check back after next scrape</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
-                  <th className="px-4 py-2">Subscriber</th>
                   <th className="px-4 py-2">Mobile</th>
                   <th className="px-4 py-2">Sentiment</th>
                   <th className="px-4 py-2">Conversion Reason</th>
@@ -167,7 +188,6 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
               <tbody>
                 {sortedLeads.map(r => (
                   <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
-                    <td className="px-4 py-2">{r['Subscriber Name'] || '--'}</td>
                     <td className="px-4 py-2">
                       <PhoneNumber number={r['Mobile Number']} />
                     </td>
@@ -178,11 +198,18 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                     </td>
                     <td className="px-4 py-2 text-xs">{r['Conversion Reason'] || '--'}</td>
                     <td className="px-4 py-2"><Chip text={r['Customer Tone'] || '--'} className={toneColor(r['Customer Tone'])} /></td>
-                    <td className="px-4 py-2 font-mono">{r['Bureau Score at Call'] || '—'}</td>
+                    <td className="px-4 py-2 font-mono">{r['Bureau Score at Call'] || '--'}</td>
                     <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                     <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
                     <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
-                    <td className="px-4 py-2"><ActionButton label="✓ Followed Up" onClick={() => handleFollowUp(r)} /></td>
+                    <td className="px-4 py-2">
+                      <ActionButton
+                        label="Followed Up"
+                        onClick={() => markDone(r.id, () => handleFollowUp(r))}
+                        recordId={r.id}
+                        doneIds={doneIds}
+                      />
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -193,7 +220,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
 
       {/* LOAN SIGNALS */}
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-        <SectionHeader title="Loan Signals" emoji="💰" count={sortedLoans.length} badgeColor="bg-info" />
+        <SectionHeader title="Loan Signals" emoji="" count={sortedLoans.length} badgeColor="bg-info" />
         {sortedLoans.length === 0 ? (
           <p className="px-4 py-8 text-center text-gray-400">No loan signals right now</p>
         ) : (
@@ -201,7 +228,6 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
-                  <th className="px-4 py-2">Subscriber</th>
                   <th className="px-4 py-2">Mobile</th>
                   <th className="px-4 py-2">Sentiment</th>
                   <th className="px-4 py-2">Loan Context</th>
@@ -216,7 +242,6 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
               <tbody>
                 {sortedLoans.map(r => (
                   <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
-                    <td className="px-4 py-2">{r['Subscriber Name'] || '--'}</td>
                     <td className="px-4 py-2">
                       <PhoneNumber number={r['Mobile Number']} />
                     </td>
@@ -226,12 +251,20 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                       ) : '--'}
                     </td>
                     <td className="px-4 py-2 text-xs">{r['Loan Context'] || '--'}</td>
-                    <td className="px-4 py-2 font-mono">{r['Days Since Purchase'] ?? '—'}</td>
-                    <td className="px-4 py-2 font-mono">{r['Bureau Score at Call'] || '—'}</td>
+                    <td className="px-4 py-2 font-mono">{r['Days Since Purchase'] ?? '--'}</td>
+                    <td className="px-4 py-2 font-mono">{r['Bureau Score at Call'] || '--'}</td>
                     <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                     <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'}</td>
                     <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
-                    <td className="px-4 py-2"><ActionButton label="✓ Initiate Loan" onClick={() => handleLoan(r)} color="bg-info" /></td>
+                    <td className="px-4 py-2">
+                      <ActionButton
+                        label="Initiate Loan"
+                        onClick={() => markDone(r.id, () => handleLoan(r))}
+                        color="bg-info"
+                        recordId={r.id}
+                        doneIds={doneIds}
+                      />
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -242,7 +275,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
 
       {/* CHURN RISK */}
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-        <SectionHeader title="Churn Risk" emoji="⚠️" count={sortedChurn.length} badgeColor="bg-fail" />
+        <SectionHeader title="Churn Risk" emoji="" count={sortedChurn.length} badgeColor="bg-fail" />
         {sortedChurn.length === 0 ? (
           <p className="px-4 py-8 text-center text-gray-400">No churn risks right now</p>
         ) : (
@@ -250,7 +283,6 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
-                  <th className="px-4 py-2">Subscriber</th>
                   <th className="px-4 py-2">Mobile</th>
                   <th className="px-4 py-2">Sentiment</th>
                   <th className="px-4 py-2">Churn Reason</th>
@@ -267,7 +299,6 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
               <tbody>
                 {sortedChurn.map(r => (
                   <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
-                    <td className="px-4 py-2">{r['Subscriber Name'] || '--'}</td>
                     <td className="px-4 py-2">
                       <PhoneNumber number={r['Mobile Number']} />
                     </td>
@@ -279,12 +310,20 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                     <td className="px-4 py-2 text-xs">{r['Churn Reason'] || '--'}</td>
                     <td className="px-4 py-2"><Chip text={r['Sentiment'] || '--'} className={sentimentColor(r['Sentiment'])} /></td>
                     <td className="px-4 py-2"><Chip text={r['Customer Tone'] || '--'} className={toneColor(r['Customer Tone'])} /></td>
-                    <td className="px-4 py-2 font-mono">{r['Prior Call Attempts'] ?? '—'}</td>
-                    <td className="px-4 py-2 font-mono">{r['Days Since Purchase'] ?? '—'}</td>
+                    <td className="px-4 py-2 font-mono">{r['Prior Call Attempts'] ?? '--'}</td>
+                    <td className="px-4 py-2 font-mono">{r['Days Since Purchase'] ?? '--'}</td>
                     <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                     <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'}</td>
                     <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
-                    <td className="px-4 py-2"><ActionButton label="✓ Recovered" onClick={() => handleRecovered(r)} color="bg-amber" /></td>
+                    <td className="px-4 py-2">
+                      <ActionButton
+                        label="Recovered"
+                        onClick={() => markDone(r.id, () => handleRecovered(r))}
+                        color="bg-amber"
+                        recordId={r.id}
+                        doneIds={doneIds}
+                      />
+                    </td>
                   </tr>
                 ))}
               </tbody>

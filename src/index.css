@@ -27,3 +27,29 @@ body {
 .pulse-dot {
   animation: pulse-dot 1.5s ease-in-out infinite;
 }
+
+/* Mobile bottom tab bar safe area */
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Mobile compact tables */
+@media (max-width: 767px) {
+  table th, table td {
+    padding-left: 8px;
+    padding-right: 8px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  /* Minimum touch targets */
+  button, a[href] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Smaller text in tables on mobile */
+  table {
+    font-size: 12px;
+  }
+}

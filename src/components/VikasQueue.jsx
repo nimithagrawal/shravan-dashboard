@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { patchRecord } from '../lib/airtable';
-import { qaScore, qaRating, fmtDuration, ratingColor, truncate } from '../lib/helpers';
+import { qaScore, qaRating, fmtDuration, ratingColor, truncate, computeQAFailureReason, isHumanPickup, kpiColor } from '../lib/helpers';
 import PhoneNumber from './PhoneNumber';
 
 function Chip({ text, className }) {
@@ -11,7 +11,7 @@ function ActionButton({ label, onClick }) {
   return (
     <button
       onClick={onClick}
-      className="px-3 py-1 text-xs font-medium rounded-lg bg-pass text-white hover:bg-green-700 active:scale-95 transition-all"
+      className="px-3 py-1 text-xs font-medium rounded-lg bg-pass text-white hover:bg-green-700 active:scale-95 transition-all min-h-[44px] md:min-h-0"
     >
       {label}
     </button>
@@ -54,34 +54,99 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
     }
   };
 
-  // SECTION B: QA Review
-  const qaReview = useMemo(() =>
-    today
-      .map(r => ({ ...r, _qs: qaScore(r), _qr: qaRating(qaScore(r)) }))
+  // SECTION B: QA Review — strict filter
+  // Welcome-Call only, duration>45, real transcript, FAIL|AMBER
+  const qaReview = useMemo(() => {
+    return today
+      .filter(r => {
+        const cat = r.callCategory || r['Call Category'];
+        const fw = r.evaluationFramework || r['Evaluation Framework'];
+        const isWelcome = cat === 'Welcome-Call' || fw === 'Welcome-Call-QA';
+        if (!isWelcome) return false;
+        const dur = r['Duration Seconds'];
+        if (dur == null || dur <= 45) return false;
+        const transcript = r['Transcript'];
+        if (!transcript || transcript === 'failed' || transcript.trim() === '') return false;
+        return true;
+      })
+      .map(r => ({
+        ...r,
+        _qs: qaScore(r),
+        _qr: qaRating(qaScore(r)),
+        _failReason: computeQAFailureReason(r),
+      }))
       .filter(r => r._qr === 'FAIL' || r._qr === 'AMBER')
-      .sort((a, b) => a._qs - b._qs),
-    [today]
-  );
+      .sort((a, b) => a._qs - b._qs);
+  }, [today]);
 
   const failCount = qaReview.filter(r => r._qr === 'FAIL').length;
 
-  // Agent summary cards (this week)
-  const agentSummary = useMemo(() => {
+  // Count welcome calls for context
+  const welcomeCallCount = useMemo(() =>
+    today.filter(r => {
+      const cat = r.callCategory || r['Call Category'];
+      const fw = r.evaluationFramework || r['Evaluation Framework'];
+      return cat === 'Welcome-Call' || fw === 'Welcome-Call-QA';
+    }).length,
+    [today]
+  );
+
+  // Non-welcome counts for empty state context
+  const nonWelcomeStats = useMemo(() => {
+    const outbound = today.filter(r => {
+      const cat = r.callCategory || r['Call Category'];
+      return cat && cat !== 'Welcome-Call';
+    }).length;
+    const unreachable = today.filter(r => r['Conversion Signal'] === 'Unreachable').length;
+    return { outbound, unreachable };
+  }, [today]);
+
+  // SECTION C: Agent Coaching Cards
+  const coachingCards = useMemo(() => {
     const map = {};
     today.forEach(r => {
       const agent = r['Agent Name'] || 'Unknown';
-      if (!map[agent]) map[agent] = { name: agent, scores: [], pass: 0, amber: 0, fail: 0 };
-      const qs = qaScore(r);
-      const qr = qaRating(qs);
-      map[agent].scores.push(qs);
-      if (qr === 'PASS') map[agent].pass++;
-      else if (qr === 'AMBER') map[agent].amber++;
-      else map[agent].fail++;
+      if (!map[agent]) map[agent] = {
+        name: agent, calls: 0, connected: 0, totalSec: 0,
+        qaScores: [], hot: 0, warm: 0, welcomeQa: [],
+      };
+      map[agent].calls++;
+      if (isHumanPickup(r)) {
+        map[agent].connected++;
+        map[agent].totalSec += (r['Duration Seconds'] || 0);
+      }
+      // QA for welcome calls only
+      const cat = r.callCategory || r['Call Category'];
+      const fw = r.evaluationFramework || r['Evaluation Framework'];
+      if (cat === 'Welcome-Call' || fw === 'Welcome-Call-QA') {
+        const qs = qaScore(r);
+        map[agent].welcomeQa.push(qs);
+      }
+      if (r['Hot Lead']) map[agent].hot++;
+      if (r['Conversion Signal'] === 'warm') map[agent].warm++;
     });
-    return Object.values(map).map(a => ({
-      ...a,
-      avg: +(a.scores.reduce((s, v) => s + v, 0) / a.scores.length).toFixed(1),
-    }));
+
+    return Object.values(map).map(a => {
+      const connectRate = a.calls > 0 ? Math.round((a.connected / a.calls) * 100) : 0;
+      const avgTime = a.connected > 0 ? Math.round(a.totalSec / a.connected) : 0;
+      const avgQa = a.welcomeQa.length > 0
+        ? +(a.welcomeQa.reduce((s, v) => s + v, 0) / a.welcomeQa.length).toFixed(1)
+        : null;
+      // Status logic
+      let status = 'On Track';
+      let statusColor = 'border-pass';
+      if (avgQa !== null && avgQa < 3) {
+        status = 'Needs Coaching';
+        statusColor = 'border-fail';
+      } else if (connectRate < 15 || (avgQa !== null && avgQa < 4)) {
+        status = 'Watch';
+        statusColor = 'border-amber';
+      }
+      return { ...a, connectRate, avgTime, avgQa, status, statusColor };
+    }).sort((a, b) => {
+      const order = { 'Needs Coaching': 0, 'Watch': 1, 'On Track': 2 };
+      return (order[a.status] ?? 2) - (order[b.status] ?? 2);
+    });
   }, [today]);
 
   const QA_LABELS = ['Q1 User Agent Screened', 'Q2 Cashback Correct', 'Q3 WA Link Sent', 'Q4 Hi Attempt Made', 'Q5 Cashback Mechanic Explained', 'Q6 No Improvised Claims'];
@@ -90,13 +155,13 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
     <div className="space-y-6">
       <div>
         <h2 className="text-lg font-bold text-gray-900">Vikas — Action Queue</h2>
-        <p className="text-sm text-gray-500">Callbacks + QA Review</p>
+        <p className="text-sm text-gray-500">Callbacks + QA Review + Coaching</p>
       </div>
 
       {/* Callbacks Requested (Gemini-detected) */}
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="flex items-center gap-2 p-4 pb-2">
-          <h3 className="text-sm font-semibold text-gray-700">📞 Callbacks Requested (AI-detected)</h3>
+          <h3 className="text-sm font-semibold text-gray-700">Callbacks Requested (AI-detected)</h3>
           {sortedCallbacksReq.length > 0 && (
             <span className="bg-amber text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{sortedCallbacksReq.length}</span>
           )}
@@ -108,7 +173,6 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
-                  <th className="px-4 py-2">Subscriber</th>
                   <th className="px-4 py-2">Mobile</th>
                   <th className="px-4 py-2">Agent</th>
                   <th className="px-4 py-2">Time</th>
@@ -121,7 +185,6 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
               <tbody>
                 {sortedCallbacksReq.map(r => (
                   <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
-                    <td className="px-4 py-2">{r['Subscriber Name'] || '--'}</td>
                     <td className="px-4 py-2">
                       <PhoneNumber number={r['Mobile Number']} />
                     </td>
@@ -131,7 +194,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                     <td className="px-4 py-2">{fmtDuration(r['Duration Seconds'])}</td>
                     <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
                     <td className="px-4 py-2">
-                      <ActionButton label="✓ Called Back" onClick={() => handleCallbackReqDone(r)} />
+                      <ActionButton label="Done" onClick={() => handleCallbackReqDone(r)} />
                     </td>
                   </tr>
                 ))}
@@ -141,7 +204,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
         )}
       </div>
 
-      {/* SECTION A: Callbacks */}
+      {/* SECTION A: Callbacks Pending */}
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="flex items-center gap-2 p-4 pb-2">
           <h3 className="text-sm font-semibold text-gray-700">Callbacks Pending</h3>
@@ -150,7 +213,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
           )}
         </div>
         {sortedCallbacks.length === 0 ? (
-          <p className="px-4 py-8 text-center text-gray-400">✅ No callbacks pending</p>
+          <p className="px-4 py-8 text-center text-gray-400">All callbacks done for today</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -158,7 +221,6 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Priority</th>
                   <th className="px-4 py-2">Due</th>
-                  <th className="px-4 py-2">Subscriber</th>
                   <th className="px-4 py-2">Mobile</th>
                   <th className="px-4 py-2">Agent</th>
                   <th className="px-4 py-2">Attempt</th>
@@ -174,15 +236,14 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                   <tr key={r.id} className="border-b border-gray-50 hover:bg-gray-50">
                     <td className="px-4 py-2">
                       {r['Callback Priority'] === 'Urgent'
-                        ? <Chip text="🔴 Urgent" className="bg-red-600 text-white" />
+                        ? <Chip text="Urgent" className="bg-red-600 text-white" />
                         : r['Callback Priority'] === 'High'
-                        ? <Chip text="🟠 High" className="bg-orange-500 text-white" />
-                        : <Chip text="⚪ Normal" className="bg-gray-200 text-gray-700" />}
+                        ? <Chip text="High" className="bg-orange-500 text-white" />
+                        : <Chip text="Normal" className="bg-gray-200 text-gray-700" />}
                     </td>
                     <td className="px-4 py-2">
                       <Chip text={r['Callback Due'] || '--'} className="bg-gray-100 text-gray-700" />
                     </td>
-                    <td className="px-4 py-2">{r['Subscriber Name'] || r['Mobile Number'] || '--'}</td>
                     <td className="px-4 py-2">
                       <PhoneNumber number={r['Mobile Number']} />
                     </td>
@@ -193,7 +254,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                     <td className="px-4 py-2">{fmtDuration(r['Duration Seconds'])}</td>
                     <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
                     <td className="px-4 py-2">
-                      <ActionButton label="✓ Mark Called" onClick={() => handleMarkCalled(r)} />
+                      <ActionButton label="Done" onClick={() => handleMarkCalled(r)} />
                     </td>
                   </tr>
                 ))}
@@ -203,16 +264,21 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
         )}
       </div>
 
-      {/* SECTION B: QA Review */}
+      {/* SECTION B: QA Review — Welcome Calls Only */}
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         <div className="flex items-center gap-2 p-4 pb-2">
-          <h3 className="text-sm font-semibold text-gray-700">QA Review — Today</h3>
+          <h3 className="text-sm font-semibold text-gray-700">QA Review — Welcome Calls</h3>
           {failCount > 0 && (
             <span className="bg-fail text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{failCount}</span>
           )}
+          <span className="text-xs text-gray-400 ml-auto">{welcomeCallCount} welcome calls today</span>
         </div>
         {qaReview.length === 0 ? (
-          <p className="px-4 py-8 text-center text-gray-400">✅ All calls passed QA today</p>
+          <p className="px-4 py-8 text-center text-gray-400">
+            {welcomeCallCount === 0
+              ? `No Welcome Calls today. Pipeline processed ${nonWelcomeStats.outbound} outbound + ${nonWelcomeStats.unreachable} unreachable`
+              : 'All Welcome Calls passed QA today'}
+          </p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -222,8 +288,8 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                   <th className="px-4 py-2">Agent</th>
                   <th className="px-4 py-2">Time</th>
                   <th className="px-4 py-2">Attempt</th>
-                  <th className="px-4 py-2">Subscriber</th>
                   <th className="px-4 py-2">Q1-Q6</th>
+                  <th className="px-4 py-2">Failure Reason</th>
                   <th className="px-4 py-2">Compliance</th>
                   <th className="px-4 py-2">Summary</th>
                   <th className="px-4 py-2">Listen</th>
@@ -236,7 +302,6 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                     <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                     <td className="px-4 py-2 whitespace-nowrap">{r['Call Time'] || '--'}</td>
                     <td className="px-4 py-2">{r['Attempt Number'] || '--'}</td>
-                    <td className="px-4 py-2">{r['Subscriber Name'] || '--'}</td>
                     <td className="px-4 py-2">
                       <div className="flex gap-1">
                         {QA_LABELS.map((q, i) => (
@@ -246,13 +311,14 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                         ))}
                       </div>
                     </td>
+                    <td className="px-4 py-2 text-xs text-fail max-w-[200px]">{r._failReason || '--'}</td>
                     <td className="px-4 py-2">
-                      {r['Compliance Violation'] && <span className="text-fail text-xs">🚨 {r['Compliance Detail'] || 'Violation'}</span>}
+                      {r['Compliance Violation'] && <span className="text-fail text-xs">{r['Compliance Detail'] || 'Violation'}</span>}
                     </td>
                     <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
                     <td className="px-4 py-2">
                       {r['Recording URL'] ? (
-                        <a href={r['Recording URL']} target="_blank" rel="noopener" className="text-info text-xs underline">▶ Listen</a>
+                        <a href={r['Recording URL']} target="_blank" rel="noopener" className="text-info text-xs underline">Listen</a>
                       ) : '--'}
                     </td>
                   </tr>
@@ -263,25 +329,43 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
         )}
       </div>
 
-      {/* Agent Summary Cards */}
-      {agentSummary.length > 0 && (
+      {/* SECTION C: Agent Coaching Cards */}
+      {coachingCards.length > 0 && (
         <div>
-          <h3 className="text-sm font-semibold text-gray-700 mb-3">Agent Summary — Today</h3>
+          <h3 className="text-sm font-semibold text-gray-700 mb-3">Agent Coaching — Today</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            {agentSummary.map(a => (
+            {coachingCards.map(a => (
               <div
                 key={a.name}
-                className={`bg-card rounded-xl p-4 shadow-sm border-l-4 ${
-                  a.avg >= 5 ? 'border-pass' : a.avg >= 3 ? 'border-amber' : 'border-fail'
-                }`}
+                className={`bg-card rounded-xl p-4 shadow-sm border-l-4 ${a.statusColor}`}
               >
-                <p className="font-semibold text-gray-800">{a.name}</p>
-                <p className="text-sm text-gray-500 mt-1">Avg QA: <span className="font-mono font-bold">{a.avg}/6</span></p>
-                <div className="flex gap-3 mt-2 text-xs">
-                  <span className="text-pass font-medium">PASS: {a.pass}</span>
-                  <span className="text-amber font-medium">AMBER: {a.amber}</span>
-                  <span className="text-fail font-medium">FAIL: {a.fail}</span>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="font-semibold text-gray-800">{a.name}</p>
+                  <Chip
+                    text={a.status}
+                    className={
+                      a.status === 'Needs Coaching' ? 'bg-red-100 text-fail' :
+                      a.status === 'Watch' ? 'bg-yellow-100 text-amber' :
+                      'bg-green-100 text-pass'
+                    }
+                  />
                 </div>
+                <div className="grid grid-cols-2 gap-2 text-xs text-gray-600">
+                  <p>{a.calls} calls</p>
+                  <p className={kpiColor(a.connectRate, 25, 15)}>Connect: {a.connectRate}%</p>
+                  <p>Avg talk: {fmtDuration(a.avgTime)}</p>
+                  <p>
+                    {a.avgQa !== null
+                      ? <span className={a.avgQa >= 5 ? 'text-pass' : a.avgQa >= 3 ? 'text-amber' : 'text-fail'}>QA: {a.avgQa}/6</span>
+                      : <span className="text-gray-400">No WC QA</span>}
+                  </p>
+                </div>
+                {(a.hot > 0 || a.warm > 0) && (
+                  <div className="flex gap-2 mt-2 text-xs">
+                    {a.hot > 0 && <span className="text-red-600 font-bold">{a.hot} hot</span>}
+                    {a.warm > 0 && <span className="text-amber font-bold">{a.warm} warm</span>}
+                  </div>
+                )}
               </div>
             ))}
           </div>
