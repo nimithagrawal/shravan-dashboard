@@ -243,6 +243,79 @@ export function extractScheduledCallback(r) {
 }
 
 /**
+ * Identify subscriber type from call summary:
+ * - 'Agent/CSP' = subscriber identifies as ROINET/RNFI/VIDCOM/PAYWORLD agent or CSP
+ * - 'Disputed' = subscriber denies purchasing / says they're not the actual user
+ * - 'Customer' = actual end user (default)
+ */
+export function subscriberType(r) {
+  const s = (r['Summary'] || '').toLowerCase();
+  // Agent/CSP: subscriber explicitly identifies as an agent from known networks
+  if (s.includes('rnfi') || s.includes('roinet') || s.includes('vidcom') || s.includes('payworld') ||
+      s.includes('retailer') || s.includes('csp') || s.includes('distributor') || s.includes('reseller')) {
+    return 'Agent/CSP';
+  }
+  // Disputed: subscriber denies purchasing or is not the actual user
+  if ((s.includes('denied') && (s.includes('purchas') || s.includes('buying') || s.includes('plan'))) ||
+      s.includes('not the actual') || s.includes('not the end user') ||
+      s.includes('not the subscriber') || s.includes('wrong person') ||
+      s.includes('did not purchase') || s.includes('did not buy') ||
+      s.includes("didn't purchase") || s.includes("didn't buy") ||
+      s.includes('no such plan') || s.includes('unaware of') ||
+      (s.includes('denied') && s.includes('having')) ||
+      s.includes('wrong number')) {
+    return 'Disputed';
+  }
+  return 'Customer';
+}
+
+export function subscriberTypeColor(type) {
+  if (type === 'Agent/CSP') return 'bg-purple-100 text-purple-700';
+  if (type === 'Disputed') return 'bg-orange-100 text-orange-700';
+  return 'bg-blue-100 text-blue-700';
+}
+
+/**
+ * Pitch quality classification for completed calls tagged as rejected/cold/dead.
+ * Returns { issue, detail, hasCapturedCallback } for diagnostic purposes.
+ */
+export function pitchQualityIssue(r) {
+  const s = (r['Summary'] || '').toLowerCase();
+  const intent = r['Customer Intent Signal'];
+  const signal = r['Conversion Signal'];
+  const scriptDrop = r['Script Section at Drop'] || '';
+  const hasCallback = !!(r['Needs Callback'] || r['Callback Requested'] || r['Callback Due']);
+
+  // Classify the issue
+  let issue = 'Unknown';
+  if (s.includes('denied') && (s.includes('purchas') || s.includes('plan') || s.includes('buying'))) {
+    issue = 'Denied Purchase';
+  } else if (s.includes('wrong number') || s.includes('wrong person')) {
+    issue = 'Wrong Number';
+  } else if (s.includes('frustrated') || s.includes('angry') || s.includes('upset') || s.includes('hostile')) {
+    issue = 'Customer Frustrated';
+  } else if (s.includes('busy') || s.includes('not available') || s.includes('call later') || s.includes('callback')) {
+    issue = 'Busy / Call Later';
+  } else if (s.includes('not interested') || s.includes('refused') || s.includes('declined')) {
+    issue = 'Not Interested';
+  } else if (s.includes('confused') || s.includes("didn't understand") || s.includes('not aware')) {
+    issue = 'Customer Confused';
+  } else if (s.includes('network') || s.includes('disconnected') || s.includes('dropped')) {
+    issue = 'Call Dropped';
+  } else if (scriptDrop === 'Opening' || scriptDrop === 'Screening') {
+    issue = 'Early Drop (' + scriptDrop + ')';
+  } else if (intent === 'Rejected') {
+    issue = 'Rejected (Unclear Why)';
+  } else if (signal === 'cold') {
+    issue = 'Low Engagement';
+  } else if (signal === 'dead') {
+    issue = 'No Recovery Possible';
+  }
+
+  return { issue, hasCapturedCallback: hasCallback, scriptDrop };
+}
+
+/**
  * Scrape freshness: green <35m, amber 35-65m, red >65m
  */
 export function scrapeAgeStatus(dateStr) {

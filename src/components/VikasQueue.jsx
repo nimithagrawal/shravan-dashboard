@@ -1,6 +1,6 @@
 import { useState, useMemo, Fragment } from 'react';
 import { patchRecord } from '../lib/airtable';
-import { qaScore, qaRating, fmtDuration, ratingColor, truncate, computeQAFailureReason, isHumanPickup, kpiColor, computeGist, gistColor, extractScheduledCallback } from '../lib/helpers';
+import { qaScore, qaRating, fmtDuration, ratingColor, truncate, computeQAFailureReason, isHumanPickup, kpiColor, computeGist, gistColor, extractScheduledCallback, subscriberType, subscriberTypeColor } from '../lib/helpers';
 import PhoneNumber from './PhoneNumber';
 
 function Chip({ text, className }) {
@@ -262,6 +262,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Type</th>
                   <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Agent</th>
                   <th className="px-4 py-2">Time</th>
@@ -274,10 +275,12 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                 {sortedCallbacksReq.map((r, i) => {
                   const key = `cbr-${r.id}`;
                   const gist = computeGist(r);
+                  const subType = subscriberType(r);
                   return (
                     <Fragment key={r.id}>
                       <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
                         <td className="px-4 py-2"><PhoneNumber number={r['Mobile Number']} /></td>
+                        <td className="px-4 py-2"><span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${subscriberTypeColor(subType)}`}>{subType}</span></td>
                         <td className={`px-4 py-2 text-xs ${gistColor(gist)}`}>{gist}</td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                         <td className="px-4 py-2 whitespace-nowrap">{r['Call Time'] || '--'}</td>
@@ -287,7 +290,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                           <ActionButton label="Done" onClick={() => handleCallbackReqDone(r)} />
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={7} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={8} />}
                     </Fragment>
                   );
                 })}
@@ -428,6 +431,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">QA</th>
+                  <th className="px-4 py-2">Type</th>
                   <th className="px-4 py-2">Mobile</th>
                   <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Agent</th>
@@ -440,10 +444,12 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
               <tbody>
                 {welcomeCalls.map(r => {
                   const key = `wc-${r.id}`;
+                  const subType = subscriberType(r);
                   return (
                     <Fragment key={r.id}>
                       <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
                         <td className="px-4 py-2"><Chip text={r._qr} className={ratingColor(r._qr)} /></td>
+                        <td className="px-4 py-2"><span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${subscriberTypeColor(subType)}`}>{subType}</span></td>
                         <td className="px-4 py-2"><PhoneNumber number={r['Mobile Number']} /></td>
                         <td className={`px-4 py-2 text-xs ${gistColor(r._gist)}`}>{r._gist}</td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
@@ -460,7 +466,7 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
                         </td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={8} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={9} />}
                     </Fragment>
                   );
                 })}

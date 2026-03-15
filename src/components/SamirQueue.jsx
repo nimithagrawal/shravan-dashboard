@@ -1,6 +1,6 @@
 import { useState, useMemo, Fragment } from 'react';
 import { patchRecord } from '../lib/airtable';
-import { truncate, sentimentScoreColor, fmtDuration, computeGist, gistColor } from '../lib/helpers';
+import { truncate, sentimentScoreColor, fmtDuration, computeGist, gistColor, subscriberType, subscriberTypeColor } from '../lib/helpers';
 import PhoneNumber from './PhoneNumber';
 
 function Chip({ text, className }) {
@@ -165,6 +165,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Type</th>
                   <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Sentiment</th>
                   <th className="px-4 py-2">Objection</th>
@@ -178,12 +179,14 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                 {sortedCallbacksReq.map(r => {
                   const key = `scbr-${r.id}`;
                   const gist = computeGist(r);
+                  const subType = subscriberType(r);
                   return (
                     <Fragment key={r.id}>
                       <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
                         <td className="px-4 py-2">
                           <PhoneNumber number={r['Mobile Number']} />
                         </td>
+                        <td className="px-4 py-2"><span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${subscriberTypeColor(subType)}`}>{subType}</span></td>
                         <td className={`px-4 py-2 text-xs ${gistColor(gist)}`}>{gist}</td>
                         <td className="px-4 py-2">
                           {r['Customer Sentiment Score'] != null ? (
@@ -204,7 +207,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                           />
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={8} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={9} />}
                     </Fragment>
                   );
                 })}
@@ -225,6 +228,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Type</th>
                   <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Sentiment</th>
                   <th className="px-4 py-2">Conversion Reason</th>
@@ -240,12 +244,14 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                 {sortedLeads.map(r => {
                   const key = `shl-${r.id}`;
                   const gist = computeGist(r);
+                  const subType = subscriberType(r);
                   return (
                     <Fragment key={r.id}>
                       <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
                         <td className="px-4 py-2">
                           <PhoneNumber number={r['Mobile Number']} />
                         </td>
+                        <td className="px-4 py-2"><span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${subscriberTypeColor(subType)}`}>{subType}</span></td>
                         <td className={`px-4 py-2 text-xs ${gistColor(gist)}`}>{gist}</td>
                         <td className="px-4 py-2">
                           {r['Customer Sentiment Score'] != null ? (
@@ -267,7 +273,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                           />
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={10} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={11} />}
                     </Fragment>
                   );
                 })}
@@ -288,6 +294,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Type</th>
                   <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Sentiment</th>
                   <th className="px-4 py-2">Loan Context</th>
@@ -303,12 +310,14 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                 {sortedLoans.map(r => {
                   const key = `sln-${r.id}`;
                   const gist = computeGist(r);
+                  const subType = subscriberType(r);
                   return (
                     <Fragment key={r.id}>
                       <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
                         <td className="px-4 py-2">
                           <PhoneNumber number={r['Mobile Number']} />
                         </td>
+                        <td className="px-4 py-2"><span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${subscriberTypeColor(subType)}`}>{subType}</span></td>
                         <td className={`px-4 py-2 text-xs ${gistColor(gist)}`}>{gist}</td>
                         <td className="px-4 py-2">
                           {r['Customer Sentiment Score'] != null ? (
@@ -331,7 +340,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                           />
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={10} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={11} />}
                     </Fragment>
                   );
                 })}
@@ -352,6 +361,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Type</th>
                   <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Sentiment</th>
                   <th className="px-4 py-2">Churn Reason</th>
@@ -369,12 +379,14 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                 {sortedChurn.map(r => {
                   const key = `scr-${r.id}`;
                   const gist = computeGist(r);
+                  const subType = subscriberType(r);
                   return (
                     <Fragment key={r.id}>
                       <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
                         <td className="px-4 py-2">
                           <PhoneNumber number={r['Mobile Number']} />
                         </td>
+                        <td className="px-4 py-2"><span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${subscriberTypeColor(subType)}`}>{subType}</span></td>
                         <td className={`px-4 py-2 text-xs ${gistColor(gist)}`}>{gist}</td>
                         <td className="px-4 py-2">
                           {r['Customer Sentiment Score'] != null ? (
@@ -399,7 +411,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                           />
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={12} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={13} />}
                     </Fragment>
                   );
                 })}

@@ -7,6 +7,7 @@ import {
   computeCallTag, callTagColor, isHumanPickup, isConnectedCall,
   truncate, maskPhone, intentChipColor,
   fmtTalkTime, fmtAvgTalkTime,
+  subscriberType, subscriberTypeColor, pitchQualityIssue,
 } from '../lib/helpers';
 import PhoneNumber from './PhoneNumber';
 
@@ -63,6 +64,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
       _qr: qaRating(qaScore(r)),
       _human: isHumanPickup(r),
       _connected: isConnectedCall(r),
+      _subType: subscriberType(r),
     })),
     [records]
   );
@@ -109,6 +111,11 @@ export default function Overview({ records, prevRecords = [], period, periodStar
   const hotCount = enriched.filter(r => r._tag === 'HOT').length;
   const warmCount = enriched.filter(r => r._tag === 'WARM').length;
   const callbackRequestedCount = enriched.filter(r => r['Callback Requested']).length;
+
+  // Agent vs Customer vs Disputed
+  const agentSubCount = enriched.filter(r => r._subType === 'Agent/CSP').length;
+  const disputedSubCount = enriched.filter(r => r._subType === 'Disputed').length;
+  const customerSubCount = total - agentSubCount - disputedSubCount;
 
   // ── Summary Stats Row ──
   const summaryLine = `${total.toLocaleString()} calls | ${connectedCalls.length} connected (${total > 0 ? Math.round((connectedCalls.length / total) * 100) : 0}%) | ${fmtTalkTime(totalTalkTimeSec)} talk time | ${hotCount + warmCount} leads | ${callbacksPending} pending retry`;
@@ -236,6 +243,57 @@ export default function Overview({ records, prevRecords = [], period, periodStar
       avg: +(a.scores.reduce((s, v) => s + v, 0) / a.scores.length).toFixed(1),
     })).sort((a, b) => a.avg - b.avg); // worst first
     return { wc: wc.length, scored: scored.length, pass, amber, fail, qFails, agentList };
+  }, [enriched]);
+
+  // ── Pitch Quality Analysis — Completed calls tagged rejected/cold/dead ──
+  const pitchAnalysis = useMemo(() => {
+    const completed = enriched.filter(r => r['Call Outcome'] === 'Completed');
+    const problematic = completed.filter(r =>
+      r['Customer Intent Signal'] === 'Rejected' ||
+      r['Conversion Signal'] === 'cold' ||
+      r['Conversion Signal'] === 'dead'
+    ).map(r => ({
+      ...r,
+      _pitchIssue: pitchQualityIssue(r),
+    }));
+
+    // Group by issue type
+    const issueMap = {};
+    problematic.forEach(r => {
+      const issue = r._pitchIssue.issue;
+      if (!issueMap[issue]) issueMap[issue] = { issue, count: 0, withCallback: 0, records: [] };
+      issueMap[issue].count++;
+      if (r._pitchIssue.hasCapturedCallback) issueMap[issue].withCallback++;
+      if (issueMap[issue].records.length < 3) issueMap[issue].records.push(r);
+    });
+    const issues = Object.values(issueMap).sort((a, b) => b.count - a.count);
+
+    // Per-agent breakdown
+    const agentMap = {};
+    problematic.forEach(r => {
+      const a = r['Agent Name'] || 'Unknown';
+      if (!agentMap[a]) agentMap[a] = { name: a, rejected: 0, cold: 0, dead: 0, total: 0, withCallback: 0 };
+      agentMap[a].total++;
+      if (r['Customer Intent Signal'] === 'Rejected') agentMap[a].rejected++;
+      if (r['Conversion Signal'] === 'cold') agentMap[a].cold++;
+      if (r['Conversion Signal'] === 'dead') agentMap[a].dead++;
+      if (r._pitchIssue.hasCapturedCallback) agentMap[a].withCallback++;
+    });
+    const agents = Object.values(agentMap).sort((a, b) => b.total - a.total);
+
+    const callbackCaptureRate = problematic.length > 0
+      ? Math.round((problematic.filter(r => r._pitchIssue.hasCapturedCallback).length / problematic.length) * 100)
+      : 0;
+
+    return {
+      completedCount: completed.length,
+      problematicCount: problematic.length,
+      problematicRate: completed.length > 0 ? Math.round((problematic.length / completed.length) * 100) : 0,
+      callbackCaptureRate,
+      issues,
+      agents,
+      records: problematic,
+    };
   }, [enriched]);
 
   // ── Agent Productivity ──
@@ -402,6 +460,39 @@ export default function Overview({ records, prevRecords = [], period, periodStar
         <KpiCard label="Active Signals" value={activeSignals} color={activeSignals > 0 ? 'text-info' : 'text-gray-400'} />
       </div>
 
+      {/* Subscriber Type + Pitch Quality Strip */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        <div className="bg-card rounded-xl p-3 shadow-sm border border-gray-100">
+          <p className="text-xs text-gray-500 mb-1">Customers</p>
+          <p className="text-xl font-bold text-blue-700">{customerSubCount}</p>
+          <p className="text-[10px] text-gray-400">{total > 0 ? Math.round((customerSubCount / total) * 100) : 0}% of total</p>
+        </div>
+        <div className="bg-card rounded-xl p-3 shadow-sm border border-gray-100">
+          <p className="text-xs text-gray-500 mb-1">Agent / CSP</p>
+          <p className="text-xl font-bold text-purple-700">{agentSubCount}</p>
+          <p className="text-[10px] text-gray-400">{total > 0 ? Math.round((agentSubCount / total) * 100) : 0}% of total</p>
+        </div>
+        <div className="bg-card rounded-xl p-3 shadow-sm border border-gray-100">
+          <p className="text-xs text-gray-500 mb-1">Disputed</p>
+          <p className={`text-xl font-bold ${disputedSubCount > 0 ? 'text-orange-600' : 'text-gray-400'}`}>{disputedSubCount}</p>
+          <p className="text-[10px] text-gray-400">Denied purchase / wrong person</p>
+        </div>
+        <div className="bg-card rounded-xl p-3 shadow-sm border border-gray-100">
+          <p className="text-xs text-gray-500 mb-1">Pitch Issues</p>
+          <p className={`text-xl font-bold ${pitchAnalysis.problematicRate > 30 ? 'text-fail' : pitchAnalysis.problematicRate > 15 ? 'text-amber' : 'text-pass'}`}>
+            {pitchAnalysis.problematicCount}
+          </p>
+          <p className="text-[10px] text-gray-400">{pitchAnalysis.problematicRate}% of {pitchAnalysis.completedCount} completed</p>
+        </div>
+        <div className="bg-card rounded-xl p-3 shadow-sm border border-gray-100">
+          <p className="text-xs text-gray-500 mb-1">Callback Capture</p>
+          <p className={`text-xl font-bold ${pitchAnalysis.callbackCaptureRate >= 50 ? 'text-pass' : pitchAnalysis.callbackCaptureRate >= 25 ? 'text-amber' : 'text-fail'}`}>
+            {pitchAnalysis.callbackCaptureRate}%
+          </p>
+          <p className="text-[10px] text-gray-400">Of rejected/cold calls</p>
+        </div>
+      </div>
+
       {/* B) Call Distribution Chart */}
       <div className="bg-card rounded-xl p-4 shadow-sm border border-gray-100">
         <div className="flex items-center justify-between mb-3">
@@ -444,6 +535,24 @@ export default function Overview({ records, prevRecords = [], period, periodStar
           </div>
         ) : (
           <div className="space-y-4">
+            {/* QA Scoring Funnel */}
+            <div className="bg-gray-50 rounded-lg p-3">
+              <p className="text-xs font-semibold text-gray-600 mb-2">Scoring Funnel</p>
+              <div className="flex items-center gap-2 text-xs">
+                <span className="font-mono font-bold">{qaAnalysis.wc}</span>
+                <span className="text-gray-400">Welcome</span>
+                <span className="text-gray-300">&rarr;</span>
+                <span className="font-mono font-bold">{qaAnalysis.scored}</span>
+                <span className="text-gray-400">Scoreable (dur&gt;45s + transcript)</span>
+                <span className="text-gray-300">&rarr;</span>
+                <span className="font-mono font-bold text-fail">{qaAnalysis.fail + qaAnalysis.amber}</span>
+                <span className="text-gray-400">Need Attention</span>
+              </div>
+              <p className="text-[10px] text-gray-400 mt-1">
+                {qaAnalysis.wc - qaAnalysis.scored} calls excluded: short calls (&le;45s) or failed transcription
+              </p>
+            </div>
+
             {/* Score Distribution */}
             <div>
               <p className="text-xs text-gray-500 mb-2">{qaAnalysis.scored} calls scored (dur&gt;45s, real transcript)</p>
@@ -540,6 +649,74 @@ export default function Overview({ records, prevRecords = [], period, periodStar
           </div>
         )}
       </div>
+
+      {/* Pitch Quality Analysis — Rejected/Cold/Dead Completed Calls */}
+      {pitchAnalysis.problematicCount > 0 && (
+        <div className="bg-card rounded-xl p-4 shadow-sm border border-gray-100">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-gray-700">Pitch Quality Analysis</h2>
+            <span className="text-xs text-gray-400">
+              {pitchAnalysis.problematicCount} of {pitchAnalysis.completedCount} completed calls need review
+            </span>
+          </div>
+          <p className="text-xs text-gray-500 mb-3">
+            These are completed calls where paid subscribers were tagged as rejected, cold, or dead.
+            {pitchAnalysis.callbackCaptureRate < 50 && (
+              <span className="text-fail font-medium"> Only {pitchAnalysis.callbackCaptureRate}% had a callback captured — busy subscribers should always have a follow-up scheduled.</span>
+            )}
+          </p>
+
+          {/* Issue Breakdown */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 mb-4">
+            {pitchAnalysis.issues.map(issue => (
+              <div key={issue.issue} className="bg-gray-50 rounded-lg p-2.5 text-xs">
+                <p className="font-semibold text-gray-700">{issue.issue}</p>
+                <p className="text-lg font-bold text-gray-900">{issue.count}</p>
+                <p className="text-[10px] text-gray-400">
+                  {issue.withCallback}/{issue.count} have callback
+                </p>
+              </div>
+            ))}
+          </div>
+
+          {/* Per-Agent Pitch Issues Table */}
+          {pitchAnalysis.agents.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-gray-600 mb-2">Agent-wise Pitch Issues</p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-gray-100 text-left text-gray-500">
+                      <th className="px-3 py-1.5">Agent</th>
+                      <th className="px-3 py-1.5">Total Issues</th>
+                      <th className="px-3 py-1.5">Rejected</th>
+                      <th className="px-3 py-1.5">Cold</th>
+                      <th className="px-3 py-1.5">Dead</th>
+                      <th className="px-3 py-1.5">Callback Captured</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pitchAnalysis.agents.map(a => (
+                      <tr key={a.name} className="border-b border-gray-50 hover:bg-gray-50">
+                        <td className="px-3 py-1.5 font-medium">{a.name}</td>
+                        <td className="px-3 py-1.5 font-mono font-bold">{a.total}</td>
+                        <td className="px-3 py-1.5 font-mono text-fail">{a.rejected || 0}</td>
+                        <td className="px-3 py-1.5 font-mono text-gray-500">{a.cold || 0}</td>
+                        <td className="px-3 py-1.5 font-mono text-gray-800">{a.dead || 0}</td>
+                        <td className="px-3 py-1.5">
+                          <span className={`font-mono font-bold ${a.total > 0 && Math.round((a.withCallback / a.total) * 100) < 50 ? 'text-fail' : 'text-pass'}`}>
+                            {a.withCallback}/{a.total} ({a.total > 0 ? Math.round((a.withCallback / a.total) * 100) : 0}%)
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* C) Agent Productivity Strip */}
       {agentStats.length > 0 && (
@@ -737,6 +914,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
             <thead>
               <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                 <th className="px-4 py-2">Tag</th>
+                <th className="px-4 py-2">Type</th>
                 {isMultiDay && <th className="px-4 py-2">Date</th>}
                 <th className="px-4 py-2 cursor-pointer select-none hover:text-gray-800" onClick={() => toggleSort('time')}>Time{sortArrow('time')}</th>
                 <th className="px-4 py-2">Agent</th>
@@ -750,7 +928,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
             </thead>
             <tbody>
               {visible.length === 0 && (
-                <tr><td colSpan={isMultiDay ? 10 : 9} className="px-4 py-8 text-center text-gray-400">No calls match your filters</td></tr>
+                <tr><td colSpan={isMultiDay ? 11 : 10} className="px-4 py-8 text-center text-gray-400">No calls match your filters</td></tr>
               )}
               {visible.map((r, i) => (
                 <React.Fragment key={r.id || i}>
@@ -759,6 +937,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
                     className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer"
                   >
                     <td className="px-4 py-2"><Chip text={r._tag} className={callTagColor(r._tag)} /></td>
+                    <td className="px-4 py-2"><Chip text={r._subType} className={subscriberTypeColor(r._subType)} /></td>
                     {isMultiDay && (
                       <td className="px-4 py-2 whitespace-nowrap text-xs">
                         {r['Call Date'] ? new Date(r['Call Date'] + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '--'}
@@ -786,7 +965,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
                   </tr>
                   {expanded === i && (
                     <tr className="bg-gray-50">
-                      <td colSpan={isMultiDay ? 10 : 9} className="px-4 py-4">
+                      <td colSpan={isMultiDay ? 11 : 10} className="px-4 py-4">
                         <div className="grid gap-3 text-xs max-w-4xl">
                           <div className="flex flex-wrap gap-4">
                             <span>Tag: <Chip text={r._tag} className={callTagColor(r._tag)} /></span>
