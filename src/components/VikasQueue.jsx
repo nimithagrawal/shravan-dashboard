@@ -1,6 +1,6 @@
 import { useState, useMemo, Fragment } from 'react';
 import { patchRecord } from '../lib/airtable';
-import { qaScore, qaRating, fmtDuration, ratingColor, computeQAFailureReason, isHumanPickup, kpiColor, computeGist, gistColor, extractScheduledCallback, formatCallbackDue, callbackDueColor, subscriberType, subscriberTypeColor, callLabelColor } from '../lib/helpers';
+import { qaScore, qaRating, fmtDuration, ratingColor, computeQAFailureReason, isHumanPickup, kpiColor, computeGist, gistColor, subscriberType, subscriberTypeColor, callLabelColor } from '../lib/helpers';
 import { ExpandableSummary, TranscriptViewer } from './SharedUI';
 import PhoneNumber from './PhoneNumber';
 
@@ -17,6 +17,15 @@ function ActionButton({ label, onClick }) {
       {label}
     </button>
   );
+}
+
+function CallbackStatusBadge({ status, rollCount }) {
+  if (status === 'Scheduled') return <Chip text="Scheduled" className="bg-gray-100 text-gray-600" />;
+  if (status === 'Attempted') return <Chip text="Attempted" className="bg-yellow-100 text-amber" />;
+  if (status === 'Overdue') return <Chip text={`Overdue ×${rollCount || 1}`} className="bg-orange-100 text-orange-700" />;
+  if (status === 'Escalated') return <Chip text={`Escalated ×${rollCount || 3}`} className="bg-red-100 text-fail" />;
+  if (status === 'Fulfilled') return <Chip text="Fulfilled ✓" className="bg-green-100 text-pass" />;
+  return null;
 }
 
 function ExpandedRow({ r, colSpan }) {
@@ -73,26 +82,70 @@ function ExpandedRow({ r, colSpan }) {
 
 export default function VikasQueue({ today, callbacks, callbacksRequested = [], onRemove, onRefresh }) {
   const [expanded, setExpanded] = useState(null);
-  const [filterScheduledDate, setFilterScheduledDate] = useState('');
-  const [filterScheduledGroup, setFilterScheduledGroup] = useState('');
+  const [showFuture, setShowFuture] = useState(false);
 
   const toggle = (key) => setExpanded(expanded === key ? null : key);
 
-  // Callbacks Requested — merge Needs Callback + Callback Requested, dedup by ID
-  const sortedCallbacksReq = useMemo(() => {
+  // Merge all callbacks, dedup by ID
+  const allCallbacks = useMemo(() => {
     const seen = new Set();
     const merged = [];
     [...callbacks, ...callbacksRequested].forEach(r => {
       if (!seen.has(r.id)) { seen.add(r.id); merged.push(r); }
     });
-    const prio = { Urgent: 0, High: 1, Normal: 2 };
-    return merged.sort((a, b) => {
-      const pa = prio[a['Callback Priority']] ?? 2;
-      const pb = prio[b['Callback Priority']] ?? 2;
-      if (pa !== pb) return pa - pb;
-      return (b['Call Date'] || '').localeCompare(a['Call Date'] || '');
-    });
+    return merged;
   }, [callbacks, callbacksRequested]);
+
+  // Today's date string for comparison
+  const todayStr = useMemo(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  }, []);
+
+  // Section 1: OVERDUE (Status = Overdue or Escalated)
+  const overdueCallbacks = useMemo(() =>
+    allCallbacks.filter(r => {
+      const status = r['Callback Status'];
+      return status === 'Overdue' || status === 'Escalated';
+    }).sort((a, b) => (b['Roll Count'] || 0) - (a['Roll Count'] || 0)),
+    [allCallbacks]
+  );
+
+  // Section 2: TIME-SPECIFIC TODAY
+  const timeSpecificToday = useMemo(() =>
+    allCallbacks.filter(r =>
+      r['Callback Type'] === 'Time-Specific' &&
+      r['Callback Target Date'] === todayStr &&
+      r['Callback Status'] !== 'Fulfilled' &&
+      r['Callback Status'] !== 'Overdue' &&
+      r['Callback Status'] !== 'Escalated'
+    ).sort((a, b) => (a['Callback Time Window'] || '').localeCompare(b['Callback Time Window'] || '')),
+    [allCallbacks, todayStr]
+  );
+
+  // Section 3: SOFT-REQUEST TODAY
+  const softRequestToday = useMemo(() =>
+    allCallbacks.filter(r =>
+      r['Callback Type'] === 'Soft-Request' &&
+      r['Callback Target Date'] === todayStr &&
+      r['Callback Status'] !== 'Fulfilled' &&
+      r['Callback Status'] !== 'Overdue' &&
+      r['Callback Status'] !== 'Escalated'
+    ).sort((a, b) => (a['Call Date'] || '').localeCompare(b['Call Date'] || '')),
+    [allCallbacks, todayStr]
+  );
+
+  // Section 4: FUTURE (Target Date > today)
+  const futureCallbacks = useMemo(() =>
+    allCallbacks.filter(r => {
+      const td = r['Callback Target Date'];
+      return td && td > todayStr &&
+        r['Callback Status'] !== 'Fulfilled' &&
+        r['Callback Status'] !== 'Overdue' &&
+        r['Callback Status'] !== 'Escalated';
+    }).sort((a, b) => (a['Callback Target Date'] || '').localeCompare(b['Callback Target Date'] || '')),
+    [allCallbacks, todayStr]
+  );
 
   // Retry Queue — unreachable calls NOT in callbacks
   const retryQueue = useMemo(() => {
@@ -130,15 +183,34 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
     return { total: wcalls.length, fails: q2Fails, failRate };
   }, [today]);
 
-  const handleCallbackDone = async (r) => {
+  const handleMarkCalled = async (r) => {
     try {
-      const patch = {};
-      if (r['Needs Callback']) patch['Needs Callback'] = false;
-      if (r['Callback Requested']) patch['Callback Requested'] = false;
-      if (Object.keys(patch).length === 0) patch['Needs Callback'] = false;
-      await patchRecord(r.id, patch);
-      onRemove('callbacks', r.id);
-      onRemove('callbacksRequested', r.id);
+      // Check if system logged a call to this mobile today
+      const hasCall = today.some(t =>
+        String(t['Mobile Number']) === String(r['Mobile Number']) && t.id !== r.id
+      );
+      if (hasCall) {
+        await patchRecord(r.id, {
+          'Callback Status': 'Fulfilled',
+          'Needs Callback': false,
+          'Callback Requested': false
+        });
+        onRemove('callbacks', r.id);
+        onRemove('callbacksRequested', r.id);
+      } else {
+        if (confirm('No call logged by system today. Confirm manual override?')) {
+          const dateStr = new Date().toLocaleDateString('en-IN');
+          const existingNotes = r['Notes'] || '';
+          await patchRecord(r.id, {
+            'Callback Status': 'Fulfilled',
+            'Needs Callback': false,
+            'Callback Requested': false,
+            'Notes': existingNotes + `\nManually marked called by Vikas on ${dateStr}`
+          });
+          onRemove('callbacks', r.id);
+          onRemove('callbacksRequested', r.id);
+        }
+      }
     } catch (e) {
       alert('Failed: ' + e.message);
     }
@@ -207,37 +279,6 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
     const unreachable = today.filter(r => r['Conversion Signal'] === 'Unreachable').length;
     return { outbound, unreachable };
   }, [today]);
-
-  // SECTION: Scheduled Callbacks — customers who asked to be called at specific time
-  const scheduledCallbacks = useMemo(() => {
-    return today
-      .map(r => ({ ...r, _scheduled: extractScheduledCallback(r), _gist: computeGist(r) }))
-      .filter(r => r._scheduled)
-      .sort((a, b) => (a._scheduled.raw || '').localeCompare(b._scheduled.raw || ''));
-  }, [today]);
-
-  const filteredScheduled = useMemo(() => {
-    let rows = scheduledCallbacks;
-    if (filterScheduledGroup) {
-      const now = new Date();
-      const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-      const tmr = new Date(now); tmr.setDate(tmr.getDate() + 1);
-      const tmrStr = `${tmr.getFullYear()}-${String(tmr.getMonth() + 1).padStart(2, '0')}-${String(tmr.getDate()).padStart(2, '0')}`;
-      if (filterScheduledGroup === 'overdue') rows = rows.filter(r => r._scheduled.resolvedDate && r._scheduled.resolvedDate < todayStr);
-      else if (filterScheduledGroup === 'today') rows = rows.filter(r => r._scheduled.resolvedDate === todayStr);
-      else if (filterScheduledGroup === 'tomorrow') rows = rows.filter(r => r._scheduled.resolvedDate === tmrStr);
-      else if (filterScheduledGroup === 'future') rows = rows.filter(r => r._scheduled.resolvedDate && r._scheduled.resolvedDate > tmrStr);
-      else if (filterScheduledGroup === 'no_date') rows = rows.filter(r => !r._scheduled.resolvedDate);
-    }
-    if (filterScheduledDate) {
-      const filter = filterScheduledDate.toLowerCase();
-      rows = rows.filter(r => {
-        const raw = (r._scheduled.raw || '').toLowerCase();
-        return raw.includes(filter);
-      });
-    }
-    return rows;
-  }, [scheduledCallbacks, filterScheduledDate, filterScheduledGroup]);
 
   // SECTION: Welcome/Onboarding Calls — all welcome calls for today
   const welcomeCalls = useMemo(() => {
@@ -326,53 +367,98 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
         </div>
       )}
 
-      {/* Callbacks Requested */}
-      <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-        <div className="flex items-center gap-2 p-4 pb-2">
-          <h3 className="text-sm font-semibold text-gray-700">Callbacks Requested</h3>
-          {sortedCallbacksReq.length > 0 && (
-            <span className="bg-amber text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{sortedCallbacksReq.length}</span>
-          )}
+      {/* CALLBACK TRACKER */}
+      {/* Section 1: OVERDUE */}
+      {overdueCallbacks.length > 0 && (
+        <div className="bg-card rounded-xl shadow-sm border-l-4 border-red-500 overflow-hidden">
+          <div className="flex items-center gap-2 p-4 pb-2">
+            <h3 className="text-sm font-semibold text-red-700">Overdue Callbacks</h3>
+            <span className="bg-fail text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{overdueCallbacks.length}</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
+                  <th className="px-4 py-2">Status</th>
+                  <th className="px-4 py-2">Rolls</th>
+                  <th className="px-4 py-2">Original Date</th>
+                  <th className="px-4 py-2">Mobile</th>
+                  <th className="px-4 py-2">Agent</th>
+                  <th className="px-4 py-2">Time Window</th>
+                  <th className="px-4 py-2 max-w-[200px]">Summary</th>
+                  <th className="px-4 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {overdueCallbacks.map(r => {
+                  const key = `ov-${r.id}`;
+                  return (
+                    <Fragment key={r.id}>
+                      <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
+                        <td className="px-4 py-2"><CallbackStatusBadge status={r['Callback Status']} rollCount={r['Roll Count']} /></td>
+                        <td className="px-4 py-2 font-mono font-bold text-red-600">{r['Roll Count'] || 1}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-xs">
+                          {r['Call Date'] ? new Date(r['Call Date'] + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '--'}
+                        </td>
+                        <td className="px-4 py-2"><PhoneNumber number={r['Mobile Number']} /></td>
+                        <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
+                        <td className="px-4 py-2 text-xs">{r['Callback Time Window'] || '--'}</td>
+                        <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
+                        <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
+                          <ActionButton label="Mark Called" onClick={() => handleMarkCalled(r)} />
+                        </td>
+                      </tr>
+                      {expanded === key && <ExpandedRow r={r} colSpan={8} />}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
-        {sortedCallbacksReq.length === 0 ? (
-          <p className="px-4 py-8 text-center text-gray-400">No AI-detected callback requests</p>
+      )}
+
+      {/* Section 2: TIME-SPECIFIC TODAY */}
+      <div className="bg-card rounded-xl shadow-sm border-l-4 border-amber overflow-hidden">
+        <div className="flex items-center gap-2 p-4 pb-2">
+          <h3 className="text-sm font-semibold text-gray-700">Time-Specific — Today</h3>
+          <span className="bg-amber text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{timeSpecificToday.length}</span>
+        </div>
+        {timeSpecificToday.length === 0 ? (
+          <p className="px-4 py-6 text-center text-gray-400 text-xs">No time-specific callbacks due today</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
+                  <th className="px-4 py-2">Time Window</th>
                   <th className="px-4 py-2">Mobile</th>
-                  <th className="px-4 py-2">Type</th>
-                  <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Agent</th>
-                  <th className="px-4 py-2">Time</th>
-                  <th className="px-4 py-2">Duration</th>
+                  <th className="px-4 py-2">Original Date</th>
                   <th className="px-4 py-2">Label</th>
                   <th className="px-4 py-2 max-w-[200px]">Summary</th>
                   <th className="px-4 py-2"></th>
                 </tr>
               </thead>
               <tbody>
-                {sortedCallbacksReq.map((r, i) => {
-                  const key = `cbr-${r.id}`;
-                  const gist = computeGist(r);
-                  const subType = subscriberType(r);
+                {timeSpecificToday.map(r => {
+                  const key = `ts-${r.id}`;
                   return (
                     <Fragment key={r.id}>
                       <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
+                        <td className="px-4 py-2 font-mono text-xs font-bold text-amber">{r['Callback Time Window'] || '--'}</td>
                         <td className="px-4 py-2"><PhoneNumber number={r['Mobile Number']} /></td>
-                        <td className="px-4 py-2"><span className={`inline-block px-2 py-0.5 rounded-full text-[10px] font-medium ${subscriberTypeColor(subType)}`}>{subType}</span></td>
-                        <td className={`px-4 py-2 text-xs ${gistColor(gist)}`}>{gist}</td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
-                        <td className="px-4 py-2 whitespace-nowrap">{r['Call Time'] || '--'}</td>
-                        <td className="px-4 py-2">{fmtDuration(r['Duration Seconds'])}</td>
+                        <td className="px-4 py-2 whitespace-nowrap text-xs">
+                          {r['Call Date'] ? new Date(r['Call Date'] + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '--'}
+                        </td>
                         <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ActionButton label="Done" onClick={() => handleCallbackDone(r)} />
+                          <ActionButton label="Mark Called" onClick={() => handleMarkCalled(r)} />
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={9} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={7} />}
                     </Fragment>
                   );
                 })}
@@ -382,69 +468,47 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
         )}
       </div>
 
-      {/* Scheduled Callbacks — customer asked to call at specific date/time */}
-      {scheduledCallbacks.length > 0 && (
-        <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
-          <div className="flex items-center gap-2 p-4 pb-2 flex-wrap">
-            <h3 className="text-sm font-semibold text-gray-700">Scheduled Callbacks</h3>
-            <span className="bg-info text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{scheduledCallbacks.length}</span>
-            <div className="ml-auto flex items-center gap-2">
-              <select
-                value={filterScheduledGroup}
-                onChange={(e) => setFilterScheduledGroup(e.target.value)}
-                className="px-2 py-1 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-info"
-              >
-                <option value="">All Dates</option>
-                <option value="overdue">Overdue</option>
-                <option value="today">Due Today</option>
-                <option value="tomorrow">Due Tomorrow</option>
-                <option value="future">Future</option>
-                <option value="no_date">No Date</option>
-              </select>
-              <input
-                type="text"
-                value={filterScheduledDate}
-                onChange={(e) => setFilterScheduledDate(e.target.value)}
-                placeholder="Search..."
-                className="px-2 py-1 text-xs border border-gray-200 rounded-lg w-28 focus:outline-none focus:border-info"
-              />
-            </div>
-          </div>
+      {/* Section 3: SOFT-REQUEST TODAY */}
+      <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        <div className="flex items-center gap-2 p-4 pb-2">
+          <h3 className="text-sm font-semibold text-gray-700">Due Today — Soft Requests</h3>
+          <span className="bg-gray-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{softRequestToday.length}</span>
+        </div>
+        {softRequestToday.length === 0 ? (
+          <p className="px-4 py-6 text-center text-gray-400 text-xs">No soft-request callbacks due today</p>
+        ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
+                  <th className="px-4 py-2">Priority</th>
                   <th className="px-4 py-2">Mobile</th>
-                  <th className="px-4 py-2">CB Due</th>
-                  <th className="px-4 py-2">Time</th>
-                  <th className="px-4 py-2">Gist</th>
                   <th className="px-4 py-2">Agent</th>
-                  <th className="px-4 py-2">Call Date</th>
+                  <th className="px-4 py-2">Original Date</th>
+                  <th className="px-4 py-2">What they said</th>
                   <th className="px-4 py-2">Label</th>
                   <th className="px-4 py-2 max-w-[200px]">Summary</th>
+                  <th className="px-4 py-2"></th>
                 </tr>
               </thead>
               <tbody>
-                {filteredScheduled.length === 0 && (
-                  <tr><td colSpan={8} className="px-4 py-6 text-center text-gray-400 text-xs">No scheduled callbacks match your filter</td></tr>
-                )}
-                {filteredScheduled.map(r => {
-                  const key = `sch-${r.id}`;
+                {softRequestToday.map(r => {
+                  const key = `sr-${r.id}`;
                   return (
                     <Fragment key={r.id}>
                       <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
+                        <td className="px-4 py-2">{r['Callback Priority'] ? <Chip text={r['Callback Priority']} className={r['Callback Priority'] === 'Urgent' ? 'bg-red-100 text-fail' : r['Callback Priority'] === 'High' ? 'bg-amber-100 text-amber' : 'bg-gray-100 text-gray-600'} /> : '--'}</td>
                         <td className="px-4 py-2"><PhoneNumber number={r['Mobile Number']} /></td>
-                        <td className="px-4 py-2">
-                          <Chip text={formatCallbackDue(r._scheduled)} className={callbackDueColor(r._scheduled)} />
-                        </td>
-                        <td className="px-4 py-2 text-xs font-mono">{r._scheduled.resolvedTime || '--'}</td>
-                        <td className={`px-4 py-2 text-xs ${gistColor(r._gist)}`}>{r._gist}</td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                         <td className="px-4 py-2 whitespace-nowrap text-xs">
                           {r['Call Date'] ? new Date(r['Call Date'] + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '--'}
                         </td>
+                        <td className="px-4 py-2 text-xs">{r['Customer Objection'] || 'Callback requested'}</td>
                         <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
+                        <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
+                          <ActionButton label="Done" onClick={() => handleMarkCalled(r)} />
+                        </td>
                       </tr>
                       {expanded === key && <ExpandedRow r={r} colSpan={8} />}
                     </Fragment>
@@ -453,6 +517,59 @@ export default function VikasQueue({ today, callbacks, callbacksRequested = [], 
               </tbody>
             </table>
           </div>
+        )}
+      </div>
+
+      {/* Section 4: FUTURE — Collapsed */}
+      {futureCallbacks.length > 0 && (
+        <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+          <div
+            className="flex items-center gap-2 p-4 cursor-pointer hover:bg-gray-50"
+            onClick={() => setShowFuture(!showFuture)}
+          >
+            <span className="text-xs text-gray-500">{showFuture ? '▼' : '▶'}</span>
+            <h3 className="text-sm font-semibold text-gray-700">Scheduled — Future</h3>
+            <span className="bg-gray-400 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{futureCallbacks.length}</span>
+            <span className="text-xs text-gray-400 ml-auto">{futureCallbacks.length} callbacks scheduled for future dates</span>
+          </div>
+          {showFuture && (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
+                    <th className="px-4 py-2">Target Date</th>
+                    <th className="px-4 py-2">Type</th>
+                    <th className="px-4 py-2">Mobile</th>
+                    <th className="px-4 py-2">Agent</th>
+                    <th className="px-4 py-2">Time Window</th>
+                    <th className="px-4 py-2">Label</th>
+                    <th className="px-4 py-2 max-w-[200px]">Summary</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {futureCallbacks.map(r => {
+                    const key = `ft-${r.id}`;
+                    return (
+                      <Fragment key={r.id}>
+                        <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
+                          <td className="px-4 py-2 whitespace-nowrap text-xs font-medium">
+                            {r['Callback Target Date'] ? new Date(r['Callback Target Date'] + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', weekday: 'short' }) : '--'}
+                          </td>
+                          <td className="px-4 py-2"><Chip text={r['Callback Type'] || '--'} className={r['Callback Type'] === 'Time-Specific' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-amber'} /></td>
+                          <td className="px-4 py-2"><PhoneNumber number={r['Mobile Number']} /></td>
+                          <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
+                          <td className="px-4 py-2 text-xs">{r['Callback Time Window'] || '--'}</td>
+                          <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
+                          <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
+                        </tr>
+                        {expanded === key && <ExpandedRow r={r} colSpan={7} />}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 

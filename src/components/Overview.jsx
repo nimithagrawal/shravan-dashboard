@@ -261,6 +261,24 @@ export default function Overview({ records, prevRecords = [], period, periodStar
     return { wc: wc.length, scored: scored.length, pass, amber, fail, qFails, agentList };
   }, [enriched]);
 
+  // Welcome Call Activation Funnel (Section F)
+  const activationFunnel = useMemo(() => {
+    const welcome = enriched.filter(r => {
+      const cat = r.callCategory || r['Call Disposition'];
+      const fw = r.evaluationFramework || r['Evaluation Framework'];
+      return cat === 'Welcome-Call' || fw === 'Welcome-Call-QA';
+    });
+    const connected = welcome.filter(r => r._human);
+    const engaged = connected.filter(r => (r['Duration Seconds'] || 0) > 30 && r['Call Label'] !== 'No Connect');
+    const actionRequired = engaged.filter(r =>
+      r['Call Label'] === 'Lab Lead' || r['Call Label'] === 'Medicine Lead' ||
+      r['Call Label'] === 'Callback Set' || r['Call Label'] === 'Complaint'
+    );
+    const activated = engaged.filter(r => r['Call Label'] === 'Activated');
+    const activationRate = welcome.length > 0 ? Math.round((activated.length / welcome.length) * 100) : 0;
+    return { welcome: welcome.length, connected: connected.length, engaged: engaged.length, actionRequired: actionRequired.length, activated: activated.length, activationRate };
+  }, [enriched]);
+
   // ── Pitch Quality Analysis — Completed calls tagged rejected/cold/dead ──
   const pitchAnalysis = useMemo(() => {
     const completed = enriched.filter(r => r['Call Outcome'] === 'Completed');
@@ -551,7 +569,16 @@ export default function Overview({ records, prevRecords = [], period, periodStar
         )}
         <KpiCard label="Total Talk Time" value={fmtTalkTime(totalTalkTimeSec)} comparison={cmpTalkTime} />
         <KpiCard label="Compliance" value={violations > 0 ? `${violations} issue${violations > 1 ? 's' : ''}` : 'Clean'} color={violations > 0 ? 'text-fail' : 'text-pass'} />
-        <KpiCard label="Active Signals" value={activeSignals} color={activeSignals > 0 ? 'text-info' : 'text-gray-400'} />
+        {activationFunnel.welcome > 0 ? (
+          <KpiCard
+            label="Activation Rate"
+            value={`${activationFunnel.activationRate}%`}
+            color={activationFunnel.activationRate > 25 ? 'text-pass' : activationFunnel.activationRate >= 10 ? 'text-amber' : 'text-fail'}
+            subtitle={`${activationFunnel.activated} of ${activationFunnel.welcome} welcome calls`}
+          />
+        ) : (
+          <KpiCard label="Active Signals" value={activeSignals} color={activeSignals > 0 ? 'text-info' : 'text-gray-400'} />
+        )}
       </div>
 
       {/* Subscriber Type + Pitch Quality Strip */}
@@ -743,6 +770,52 @@ export default function Overview({ records, prevRecords = [], period, periodStar
           </div>
         )}
       </div>
+
+      {/* Welcome Call Pipeline — Activation Funnel */}
+      {activationFunnel.welcome > 0 && (
+        <div className="bg-card rounded-xl p-4 shadow-sm border border-gray-100">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-gray-700">Welcome Call Pipeline {isToday ? '— Today' : ''}</h2>
+            <span className="text-xs text-gray-400">{activationFunnel.welcome} welcome calls</span>
+          </div>
+          <div className="space-y-2">
+            {[
+              { label: 'Welcome Calls', count: activationFunnel.welcome, color: '#6b7280', pct: 100 },
+              { label: 'Connected (human)', count: activationFunnel.connected, color: '#2563eb', pct: activationFunnel.welcome > 0 ? Math.round((activationFunnel.connected / activationFunnel.welcome) * 100) : 0 },
+              { label: 'Engaged (conv >30s)', count: activationFunnel.engaged, color: '#d97706', pct: activationFunnel.welcome > 0 ? Math.round((activationFunnel.engaged / activationFunnel.welcome) * 100) : 0 },
+              { label: 'Action Required', count: activationFunnel.actionRequired, color: '#ea580c', pct: activationFunnel.welcome > 0 ? Math.round((activationFunnel.actionRequired / activationFunnel.welcome) * 100) : 0 },
+              { label: 'Activated', count: activationFunnel.activated, color: '#16a34a', pct: activationFunnel.welcome > 0 ? Math.round((activationFunnel.activated / activationFunnel.welcome) * 100) : 0 },
+            ].map((step, i) => (
+              <div key={step.label} className="flex items-center gap-3 text-xs">
+                <span className="w-32 text-gray-600 font-medium">{step.label}</span>
+                <div className="flex-1 bg-gray-100 rounded-full h-5 relative">
+                  <div
+                    className="h-5 rounded-full transition-all"
+                    style={{ width: `${Math.max(step.pct, step.count > 0 ? 5 : 0)}%`, background: step.color }}
+                  />
+                </div>
+                <span className="w-12 text-right font-mono font-bold">{step.count}</span>
+                <span className="w-10 text-right font-mono text-gray-400">{step.pct}%</span>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 flex items-center gap-4 text-xs">
+            <span className={`font-bold ${activationFunnel.activationRate > 25 ? 'text-pass' : activationFunnel.activationRate >= 10 ? 'text-amber' : 'text-fail'}`}>
+              Activation Rate: {activationFunnel.activationRate}%
+            </span>
+            {activationFunnel.connected > 0 && (
+              <span className="text-gray-500">
+                Connect Rate: {Math.round((activationFunnel.connected / activationFunnel.welcome) * 100)}%
+              </span>
+            )}
+            {activationFunnel.engaged > 0 && activationFunnel.connected > 0 && (
+              <span className="text-gray-500">
+                Engagement Rate: {Math.round((activationFunnel.engaged / activationFunnel.connected) * 100)}%
+              </span>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Pitch Quality Analysis — Rejected/Cold/Dead Completed Calls */}
       {pitchAnalysis.problematicCount > 0 && (

@@ -15,6 +15,27 @@ function toneColor(tone) {
   return 'bg-gray-100 text-gray-600';
 }
 
+function elapsedSinceHandoff(handoffTime) {
+  if (!handoffTime) return null;
+  const handoff = new Date(handoffTime);
+  if (isNaN(handoff.getTime())) return null;
+  const now = new Date();
+  const diffMs = now - handoff;
+  if (diffMs < 0) return null;
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  if (hours < 24) return `${hours}h ${remMins}m ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function urgencyColor(urgency) {
+  if (urgency === 'Immediate') return 'bg-red-100 text-red-700 border-red-200';
+  if (urgency === 'Today') return 'bg-amber-100 text-amber border-amber-200';
+  return 'bg-gray-100 text-gray-600 border-gray-200';
+}
+
 function sentimentColor(s) {
   if (s === 'positive') return 'bg-green-100 text-pass';
   if (s === 'neutral') return 'bg-gray-100 text-gray-600';
@@ -108,12 +129,31 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
         return true;
       })
       .sort((a, b) => {
+        // Sort by urgency: Immediate > Today > Normal
+        const urgencyOrder = { 'Immediate': 0, 'Today': 1, 'Normal': 2 };
+        const ua = urgencyOrder[a['Samir Handoff Urgency']] ?? 2;
+        const ub = urgencyOrder[b['Samir Handoff Urgency']] ?? 2;
+        if (ua !== ub) return ua - ub;
+        // Then by sentiment score
         const sentDiff = (b['Customer Sentiment Score'] || 0) - (a['Customer Sentiment Score'] || 0);
         if (sentDiff !== 0) return sentDiff;
         return (b['Duration Seconds'] || 0) - (a['Duration Seconds'] || 0);
       }),
     [transactionIntents]
   );
+
+  // Check for overdue Immediate records (> 60 min)
+  const overdueImmediate = useMemo(() => {
+    const now = new Date();
+    return sortedTransactions.filter(r => {
+      if (r['Samir Handoff Urgency'] !== 'Immediate') return false;
+      const handoff = r['Samir Handoff Time'];
+      if (!handoff) return false;
+      const handoffDate = new Date(handoff);
+      const elapsedMin = (now - handoffDate) / 60000;
+      return elapsedMin > 60;
+    });
+  }, [sortedTransactions]);
 
   // Complaints section — all records with Call Label = 'Complaint' (FIX 5B)
   const complaints = useMemo(() =>
@@ -150,7 +190,11 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
 
   const handleTransactionDone = async (r) => {
     try {
-      await patchRecord(r.id, { 'Transaction Intent': false });
+      await patchRecord(r.id, {
+        'Transaction Intent': false,
+        'Samir Handoff Urgency': 'Normal',
+        'Notes': (r['Notes'] || '') + `\nSamir actioned at ${new Date().toLocaleTimeString('en-IN')}`
+      });
       onRemove('transactionIntents', r.id);
     } catch (e) { alert('Failed: ' + e.message); }
   };
@@ -202,6 +246,19 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
       <div className="bg-card rounded-xl shadow-sm border border-gray-100 overflow-hidden">
         <SectionHeader title="Transaction Signals" emoji="" count={sortedTransactions.length} badgeColor="bg-red-600" />
         <p className="px-4 text-[10px] text-gray-400 -mt-1 pb-2">Customer expressed medical/health transaction need (Gemini-detected)</p>
+        {/* Overdue Immediate Alert */}
+        {overdueImmediate.length > 0 && (
+          <div className="mx-4 mb-3 bg-red-50 border border-red-200 rounded-lg p-3">
+            <p className="text-xs font-bold text-red-800">
+              ⚠️ {overdueImmediate.length} subscriber{overdueImmediate.length > 1 ? 's were' : ' was'} promised an immediate callback over 1 hour ago.
+            </p>
+            {overdueImmediate.slice(0, 3).map(r => (
+              <p key={r.id} className="text-xs text-red-700 mt-1">
+                <PhoneNumber number={r['Mobile Number']} /> — {r['Conversion Reason'] || r['Summary']?.slice(0, 50) || 'transaction signal'} — waiting since {r['Samir Handoff Time'] ? new Date(r['Samir Handoff Time']).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : '?'}
+              </p>
+            ))}
+          </div>
+        )}
         {sortedTransactions.length === 0 ? (
           <p className="px-4 py-8 text-center text-gray-400">No transaction signals yet — goes live with next Gemini prompt update</p>
         ) : (
@@ -212,6 +269,7 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                   <th className="px-4 py-2">Mobile</th>
                   <th className="px-4 py-2">Agent</th>
                   <th className="px-4 py-2">Time</th>
+                  <th className="px-4 py-2">Urgency</th>
                   <th className="px-4 py-2">What They Said</th>
                   <th className="px-4 py-2">Medical Context</th>
                   <th className="px-4 py-2">Sentiment</th>
@@ -231,6 +289,18 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                         </td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                         <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
+                        <td className="px-4 py-2">
+                          {r['Samir Handoff Urgency'] ? (
+                            <div>
+                              <Chip text={r['Samir Handoff Urgency']} className={urgencyColor(r['Samir Handoff Urgency'])} />
+                              {r['Samir Handoff Time'] && (
+                                <p className={`text-[10px] mt-0.5 ${r['Samir Handoff Urgency'] === 'Immediate' && elapsedSinceHandoff(r['Samir Handoff Time'])?.includes('h') ? 'text-red-600 font-bold' : 'text-gray-400'}`}>
+                                  {elapsedSinceHandoff(r['Samir Handoff Time']) || ''}
+                                </p>
+                              )}
+                            </div>
+                          ) : '--'}
+                        </td>
                         <td className="px-4 py-2 text-xs">{r['Customer Objection'] || '--'}</td>
                         <td className="px-4 py-2 text-xs">{r['Conversion Reason'] || r['Loan Context'] || r['Churn Reason'] || '--'}</td>
                         <td className="px-4 py-2">
@@ -250,7 +320,7 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                           />
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={9} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={10} />}
                     </Fragment>
                   );
                 })}
