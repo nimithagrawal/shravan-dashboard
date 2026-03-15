@@ -95,11 +95,13 @@ export function maskPhone(num) {
 
 // ── New v6 helpers ──
 
+// STT failure values (must be above functions that use it)
+const STT_FAILED = ['[STT Failed]', '[STT Failed — audio could not be processed]', 'failed', ''];
+
 /**
- * Priority-based call tag: HOT → CHURN → LOAN → CALL BACK → WARM → REJECTED
- * → CANCELLED → NO CONNECT → COLD
- * NOTE: Real disposition values (Voicemail, Busy, etc.) are not populated by n8n,
- * so we derive tags from Call Outcome + Conversion Signal only.
+ * Priority-based call tag with transcript detection:
+ * HOT → CHURN → LOAN → CALL BACK → WARM(dur>45) → REJECTED
+ * → VOICEMAIL → BUSY → SWITCHED OFF → FORWARDED → CANCELLED → NO CONNECT → COLD
  */
 export function computeCallTag(r) {
   if (r['Hot Lead']) return 'HOT';
@@ -107,13 +109,21 @@ export function computeCallTag(r) {
   if (r['Loan Signal']) return 'LOAN';
   if (r['Needs Callback'] || r['Callback Requested']) return 'CALL BACK';
   const signal = r['Conversion Signal'];
-  if (signal === 'warm') return 'WARM';
+  const dur = r['Duration Seconds'] || 0;
+  if (signal === 'warm' && dur > 45) return 'WARM';
   const intent = r['Customer Intent Signal'];
   if (intent === 'Rejected' || signal === 'dead') return 'REJECTED';
+  // Transcript-based detection
+  const tx = (r['Transcript'] || '').toLowerCase();
+  if (tx.includes('voicemail') || tx.includes('voice mail')) return 'VOICEMAIL';
+  if (tx.includes('busy') || tx.includes('व्यस्त')) return 'BUSY';
+  if (tx.includes('switched off') || tx.includes('band hai')) return 'SWITCHED OFF';
+  if (tx.includes('forwarded') || tx.includes('forward')) return 'FORWARDED';
   const outcome = r['Call Outcome'];
   if (outcome === 'Dropped') return 'CANCELLED';
   if (outcome === 'No-Answer') return 'NO CONNECT';
   if (signal === 'cold') return 'COLD';
+  if (signal === 'warm') return 'WARM'; // warm but short call
   if (outcome === 'Completed') return 'COLD';
   return 'COLD';
 }
@@ -126,6 +136,10 @@ export function callTagColor(tag) {
     'CALL BACK': 'bg-amber text-white',
     'WARM': 'bg-yellow-500 text-white',
     'REJECTED': 'bg-gray-700 text-white',
+    'VOICEMAIL': 'bg-gray-500 text-white',
+    'BUSY': 'bg-gray-500 text-white',
+    'SWITCHED OFF': 'bg-red-800 text-white',
+    'FORWARDED': 'bg-purple-500 text-white',
     'CANCELLED': 'bg-gray-400 text-white',
     'NO CONNECT': 'bg-gray-300 text-gray-700',
     'COLD': 'bg-gray-200 text-gray-600',
@@ -137,8 +151,8 @@ export function callTagColor(tag) {
  * Human pickup = real transcript AND duration >20s AND outcome=Completed
  */
 export function isHumanPickup(r) {
-  const transcript = r['Transcript'];
-  if (!transcript || transcript === 'failed' || transcript.trim() === '') return false;
+  const transcript = (r['Transcript'] || '').trim();
+  if (!transcript || STT_FAILED.includes(transcript)) return false;
   const dur = r['Duration Seconds'];
   if (dur == null || dur <= 20) return false;
   return r['Call Outcome'] === 'Completed';
@@ -175,8 +189,6 @@ export function scrapeAgeStatus(dateStr) {
 }
 
 // ── Period / Talk Time helpers ──
-
-const STT_FAILED = ['[STT Failed]', '[STT Failed — audio could not be processed]', 'failed', ''];
 
 /**
  * Connected call = real conversation happened.

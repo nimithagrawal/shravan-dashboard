@@ -126,7 +126,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Mobile</th>
                   <th className="px-4 py-2">Sentiment</th>
-                  <th className="px-4 py-2">Intent</th>
+                  <th className="px-4 py-2">Objection</th>
                   <th className="px-4 py-2">Agent</th>
                   <th className="px-4 py-2">Date</th>
                   <th className="px-4 py-2 max-w-[200px]">Summary</th>
@@ -144,7 +144,7 @@ export default function SamirQueue({ hotLeads, loans, churn, callbacksRequested 
                         <span className={`font-mono font-bold ${sentimentScoreColor(r['Customer Sentiment Score'])}`}>{r['Customer Sentiment Score']}/5</span>
                       ) : '--'}
                     </td>
-                    <td className="px-4 py-2">{r['Customer Intent Signal'] || '--'}</td>
+                    <td className="px-4 py-2 text-xs">{r['Customer Objection'] || '--'}</td>
                     <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
                     <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
                     <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]">{truncate(r['Summary'])}</td>

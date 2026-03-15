@@ -62,7 +62,7 @@ export default function App() {
 
   useEffect(() => {
     refresh();
-    const id = setInterval(refresh, 120000);
+    const id = setInterval(refresh, 300000); // 5 min
     return () => clearInterval(id);
   }, [refresh]);
 

@@ -48,6 +48,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
   const [visibleCount, setVisibleCount] = useState(50);
   const [sortField, setSortField] = useState('time');
   const [sortDir, setSortDir] = useState('desc');
+  const [filterTimeRange, setFilterTimeRange] = useState('');
 
   const effectiveAgentFilter = agentFilter || filterAgent;
   const isToday = period === 'today';
@@ -172,6 +173,28 @@ export default function Overview({ records, prevRecords = [], period, periodStar
     return peak.total > 0 ? peak.label : null;
   }, [chartData]);
 
+  // Best connect rate insight
+  const connectRateInsight = useMemo(() => {
+    const withRate = chartData.filter(h => h.total >= 3).map(h => ({
+      ...h,
+      rate: Math.round((h.connected / h.total) * 100),
+    }));
+    if (withRate.length === 0) return null;
+    const best = withRate.reduce((a, b) => a.rate > b.rate ? a : b);
+    return best.rate > 0 ? `Peak connect rate: ${best.label} (${best.rate}%). Best window for callbacks.` : null;
+  }, [chartData]);
+
+  // Category breakdown for QA context
+  const categoryBreakdown = useMemo(() => {
+    const cats = {};
+    enriched.forEach(r => {
+      const c = r.callCategory || 'Unknown';
+      cats[c] = (cats[c] || 0) + 1;
+    });
+    return cats;
+  }, [enriched]);
+  const welcomeCallCount = categoryBreakdown['Welcome-Call'] || 0;
+
   // ── Agent Productivity ──
   const agentStats = useMemo(() => {
     const map = {};
@@ -261,6 +284,15 @@ export default function Overview({ records, prevRecords = [], period, periodStar
     if (filterOutcome) rows = rows.filter(r => r['Call Outcome'] === filterOutcome);
     if (filterTag) rows = rows.filter(r => r._tag === filterTag);
     if (filterCategory) rows = rows.filter(r => r.callCategory === filterCategory);
+    if (filterTimeRange) {
+      rows = rows.filter(r => {
+        const h = parseInt((r['Call Time'] || '').split(':')[0], 10);
+        if (filterTimeRange === 'morning') return h >= 9 && h < 12;
+        if (filterTimeRange === 'afternoon') return h >= 12 && h < 17;
+        if (filterTimeRange === 'evening') return h >= 17 && h <= 20;
+        return true;
+      });
+    }
     if (search) {
       const q = search.toLowerCase();
       rows = rows.filter(r =>
@@ -278,7 +310,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
       return [...rows].sort((a, b) => dir * ((a['Call Date'] || '') + (a['Call Time'] || '')).localeCompare((b['Call Date'] || '') + (b['Call Time'] || '')));
     }
     return [...rows].sort((a, b) => dir * (a['Call Time'] || '').localeCompare(b['Call Time'] || ''));
-  }, [enriched, effectiveAgentFilter, filterOutcome, filterTag, filterCategory, search, sortField, sortDir, isMultiDay]);
+  }, [enriched, effectiveAgentFilter, filterOutcome, filterTag, filterCategory, filterTimeRange, search, sortField, sortDir, isMultiDay]);
 
   const visible = filtered.slice(0, visibleCount);
 
@@ -293,6 +325,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
     setFilterOutcome('');
     setFilterTag('');
     setFilterCategory('');
+    setFilterTimeRange('');
     setAgentFilter(null);
   };
 
@@ -303,7 +336,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
 
   const sortArrow = (field) => sortField === field ? (sortDir === 'asc' ? ' \u2191' : ' \u2193') : '';
 
-  const hasFilters = effectiveAgentFilter || filterOutcome || filterTag || filterCategory || search;
+  const hasFilters = effectiveAgentFilter || filterOutcome || filterTag || filterCategory || filterTimeRange || search;
 
   return (
     <div className="space-y-6">
@@ -341,6 +374,29 @@ export default function Overview({ records, prevRecords = [], period, periodStar
             <Bar dataKey="connected" name="Connected" fill="#16a34a" radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
+        {connectRateInsight && (
+          <p className="text-xs text-pass mt-2 font-medium">{connectRateInsight}</p>
+        )}
+      </div>
+
+      {/* QA Context Note */}
+      <div className="bg-card rounded-xl p-4 shadow-sm border border-gray-100">
+        <h2 className="text-sm font-semibold text-gray-700 mb-2">Call Mix & QA</h2>
+        {welcomeCallCount > 0 ? (
+          <p className="text-xs text-gray-600">QA scores apply to Welcome Calls only. {isToday ? 'Today' : 'Period'}: {welcomeCallCount} Welcome Calls out of {total} total.</p>
+        ) : (
+          <div className="text-xs text-gray-500">
+            <p>No Welcome Call QA data {isToday ? 'today' : 'for this period'}. Call mix:</p>
+            <div className="flex flex-wrap gap-2 mt-1">
+              {Object.entries(categoryBreakdown).sort((a, b) => b[1] - a[1]).map(([cat, count]) => (
+                <span key={cat} className="inline-flex items-center gap-1">
+                  <Chip text={cat} className={callCategoryColor(cat)} />
+                  <span className="font-mono">{count}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* C) Agent Productivity Strip */}
@@ -444,6 +500,12 @@ export default function Overview({ records, prevRecords = [], period, periodStar
               );
             })}
           </div>
+          <div className="mt-3 space-y-1 text-xs">
+            <p className="text-pass font-medium">{conversionCounts.hot + conversionCounts.warm} probable transactors (hot + warm)</p>
+            {conversionCounts.Unreachable > 0 && (
+              <p className="text-info font-medium">{conversionCounts.Unreachable} eligible for retry (unreachable)</p>
+            )}
+          </div>
         </div>
         <div className="bg-card rounded-xl p-4 shadow-sm border border-gray-100">
           <h2 className="text-sm font-semibold text-gray-700 mb-3">Customer Sentiment</h2>
@@ -520,6 +582,12 @@ export default function Overview({ records, prevRecords = [], period, periodStar
               <option value="">All Categories</option>
               {categories.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
+            <select value={filterTimeRange} onChange={(e) => setFilterTimeRange(e.target.value)} className="px-2 py-1.5 text-xs border border-gray-200 rounded-lg focus:outline-none focus:border-info">
+              <option value="">All Times</option>
+              <option value="morning">Morning (9-12)</option>
+              <option value="afternoon">Afternoon (12-17)</option>
+              <option value="evening">Evening (17-20)</option>
+            </select>
           </div>
         </div>
         <div className="overflow-x-auto">
@@ -578,6 +646,9 @@ export default function Overview({ records, prevRecords = [], period, periodStar
                     <tr className="bg-gray-50">
                       <td colSpan={isMultiDay ? 10 : 9} className="px-4 py-4">
                         <div className="grid gap-3 text-xs max-w-4xl">
+                          <div className="flex flex-wrap gap-4">
+                            <span>Tag: <Chip text={r._tag} className={callTagColor(r._tag)} /></span>
+                          </div>
                           <div className="flex flex-wrap gap-4">
                             {r.callCategory && <span>Category: <Chip text={r.callCategory} className={callCategoryColor(r.callCategory)} /></span>}
                             {r.evaluationFramework && <span>Framework: <span className="font-medium">{r.evaluationFramework}</span></span>}
