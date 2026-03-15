@@ -243,7 +243,7 @@ export default function Overview({ records, prevRecords = [], period, periodStar
       failCount: scored.filter(r => !r[q]).length,
       failRate: scored.length > 0 ? Math.round(scored.filter(r => !r[q]).length / scored.length * 100) : 0,
     }));
-    // Per-agent QA
+    // Per-agent QA (scored only)
     const agentQa = {};
     scored.forEach(r => {
       const a = r['Agent Name'] || 'Unknown';
@@ -258,7 +258,24 @@ export default function Overview({ records, prevRecords = [], period, periodStar
       total: a.scores.length,
       avg: +(a.scores.reduce((s, v) => s + v, 0) / a.scores.length).toFixed(1),
     })).sort((a, b) => a.avg - b.avg); // worst first
-    return { wc: wc.length, scored: scored.length, pass, amber, fail, qFails, agentList };
+    // Per-agent summary for ALL welcome calls (shown even when scored=0)
+    const agentWcMap = {};
+    wc.forEach(r => {
+      const a = r['Agent Name'] || 'Unknown';
+      if (!agentWcMap[a]) agentWcMap[a] = { name: a, total: 0, connected: 0, totalDur: 0, outcomes: {} };
+      agentWcMap[a].total++;
+      const dur = r['Duration Seconds'] || 0;
+      agentWcMap[a].totalDur += dur;
+      if (r._connected) agentWcMap[a].connected++;
+      const oc = r['Call Outcome'] || 'Unknown';
+      agentWcMap[a].outcomes[oc] = (agentWcMap[a].outcomes[oc] || 0) + 1;
+    });
+    const agentWcList = Object.values(agentWcMap).map(a => ({
+      ...a,
+      avgDur: a.total > 0 ? Math.round(a.totalDur / a.total) : 0,
+      connectRate: a.total > 0 ? Math.round((a.connected / a.total) * 100) : 0,
+    })).sort((a, b) => b.total - a.total);
+    return { wc: wc.length, scored: scored.length, pass, amber, fail, qFails, agentList, agentWcList };
   }, [enriched]);
 
   // Welcome Call Activation Funnel (Section F)
@@ -640,135 +657,179 @@ export default function Overview({ records, prevRecords = [], period, periodStar
           <h2 className="text-sm font-semibold text-gray-700">QA Analysis — Welcome Calls</h2>
           <span className="text-xs text-gray-400">{qaAnalysis.wc} welcome / {total} total calls</span>
         </div>
-        {qaAnalysis.scored === 0 ? (
-          <div className="text-xs text-gray-500">
-            <p>No scoreable Welcome Calls {isToday ? 'today' : 'for this period'} (need dur&gt;45s + real transcript).</p>
-            {Object.keys(categoryBreakdown).length > 0 && (
-              <div className="flex flex-wrap gap-2 mt-2">
-                {Object.entries(categoryBreakdown).sort((a, b) => b[1] - a[1]).map(([cat, count]) => (
-                  <span key={cat} className="inline-flex items-center gap-1">
-                    <Chip text={cat} className={callCategoryColor(cat)} />
-                    <span className="font-mono">{count}</span>
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
-        ) : (
-          <div className="space-y-4">
-            {/* QA Scoring Funnel */}
-            <div className="bg-gray-50 rounded-lg p-3">
-              <p className="text-xs font-semibold text-gray-600 mb-2">Scoring Funnel</p>
-              <div className="flex items-center gap-2 text-xs">
-                <span className="font-mono font-bold">{qaAnalysis.wc}</span>
-                <span className="text-gray-400">Welcome</span>
-                <span className="text-gray-300">&rarr;</span>
-                <span className="font-mono font-bold">{qaAnalysis.scored}</span>
-                <span className="text-gray-400">Scoreable (dur&gt;45s + transcript)</span>
-                <span className="text-gray-300">&rarr;</span>
-                <span className="font-mono font-bold text-fail">{qaAnalysis.fail + qaAnalysis.amber}</span>
-                <span className="text-gray-400">Need Attention</span>
-              </div>
-              <p className="text-[10px] text-gray-400 mt-1">
-                {qaAnalysis.wc - qaAnalysis.scored} calls excluded: short calls (&le;45s) or failed transcription
-              </p>
-            </div>
-
-            {/* Score Distribution */}
-            <div>
-              <p className="text-xs text-gray-500 mb-2">{qaAnalysis.scored} calls scored (dur&gt;45s, real transcript)</p>
-              <div className="flex gap-3 text-sm">
-                <div className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded-full bg-pass"></span>
-                  <span className="font-bold text-pass">{qaAnalysis.pass}</span>
-                  <span className="text-xs text-gray-500">Pass</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded-full bg-amber"></span>
-                  <span className="font-bold text-amber">{qaAnalysis.amber}</span>
-                  <span className="text-xs text-gray-500">Amber</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="w-3 h-3 rounded-full bg-fail"></span>
-                  <span className="font-bold text-fail">{qaAnalysis.fail}</span>
-                  <span className="text-xs text-gray-500">Fail</span>
-                </div>
-              </div>
-              {/* Score bar */}
-              <div className="flex h-3 rounded-full overflow-hidden mt-2 bg-gray-100">
-                {qaAnalysis.pass > 0 && <div className="bg-pass" style={{ width: `${(qaAnalysis.pass / qaAnalysis.scored) * 100}%` }} />}
-                {qaAnalysis.amber > 0 && <div className="bg-amber" style={{ width: `${(qaAnalysis.amber / qaAnalysis.scored) * 100}%` }} />}
-                {qaAnalysis.fail > 0 && <div className="bg-fail" style={{ width: `${(qaAnalysis.fail / qaAnalysis.scored) * 100}%` }} />}
-              </div>
-            </div>
-
-            {/* Q1-Q6 Failure Breakdown */}
-            <div>
-              <p className="text-xs font-semibold text-gray-600 mb-2">Question Failure Rates</p>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {qaAnalysis.qFails.map(q => (
-                  <div key={q.short} className="flex items-center gap-2 text-xs">
-                    <span className="font-bold text-gray-500 w-6">{q.short}</span>
-                    <div className="flex-1 bg-gray-100 rounded-full h-2 relative">
-                      <div className={`h-2 rounded-full ${q.failRate > 50 ? 'bg-fail' : q.failRate > 25 ? 'bg-amber' : 'bg-pass'}`}
-                        style={{ width: `${Math.max(q.failRate, q.failCount > 0 ? 5 : 0)}%` }} />
-                    </div>
-                    <span className={`w-8 text-right font-mono ${q.failRate > 50 ? 'text-fail' : q.failRate > 25 ? 'text-amber' : 'text-gray-500'}`}>
-                      {q.failRate}%
+        <div className="space-y-4">
+          {qaAnalysis.scored === 0 ? (
+            <div className="text-xs text-gray-500">
+              <p>No scoreable Welcome Calls {isToday ? 'today' : 'for this period'} (need dur&gt;45s + real transcript).</p>
+              {Object.keys(categoryBreakdown).length > 0 && (
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {Object.entries(categoryBreakdown).sort((a, b) => b[1] - a[1]).map(([cat, count]) => (
+                    <span key={cat} className="inline-flex items-center gap-1">
+                      <Chip text={cat} className={callCategoryColor(cat)} />
+                      <span className="font-mono">{count}</span>
                     </span>
-                  </div>
-                ))}
-              </div>
-              <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[10px] text-gray-400">
-                {qaAnalysis.qFails.map(q => (
-                  <span key={q.short}>{q.short}: {q.label}</span>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
+          ) : (
+            <>
+              {/* QA Scoring Funnel */}
+              <div className="bg-gray-50 rounded-lg p-3">
+                <p className="text-xs font-semibold text-gray-600 mb-2">Scoring Funnel</p>
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="font-mono font-bold">{qaAnalysis.wc}</span>
+                  <span className="text-gray-400">Welcome</span>
+                  <span className="text-gray-300">&rarr;</span>
+                  <span className="font-mono font-bold">{qaAnalysis.scored}</span>
+                  <span className="text-gray-400">Scoreable (dur&gt;45s + transcript)</span>
+                  <span className="text-gray-300">&rarr;</span>
+                  <span className="font-mono font-bold text-fail">{qaAnalysis.fail + qaAnalysis.amber}</span>
+                  <span className="text-gray-400">Need Attention</span>
+                </div>
+                <p className="text-[10px] text-gray-400 mt-1">
+                  {qaAnalysis.wc - qaAnalysis.scored} calls excluded: short calls (&le;45s) or failed transcription
+                </p>
+              </div>
 
-            {/* Per-Agent QA Table */}
-            {qaAnalysis.agentList.length > 0 && (
+              {/* Score Distribution */}
               <div>
-                <p className="text-xs font-semibold text-gray-600 mb-2">Agent QA Performance</p>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="border-b border-gray-100 text-left text-gray-500">
-                        <th className="px-3 py-1.5">Agent</th>
-                        <th className="px-3 py-1.5">Scored</th>
-                        <th className="px-3 py-1.5">Avg</th>
-                        <th className="px-3 py-1.5">Pass</th>
-                        <th className="px-3 py-1.5">Amber</th>
-                        <th className="px-3 py-1.5">Fail</th>
-                        <th className="px-3 py-1.5">Rating</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {qaAnalysis.agentList.map(a => (
-                        <tr key={a.name} className="border-b border-gray-50 hover:bg-gray-50">
-                          <td className="px-3 py-1.5 font-medium">{a.name}</td>
-                          <td className="px-3 py-1.5 font-mono">{a.total}</td>
-                          <td className="px-3 py-1.5 font-mono font-bold">
-                            <span className={a.avg >= 5 ? 'text-pass' : a.avg >= 3 ? 'text-amber' : 'text-fail'}>{a.avg}/6</span>
-                          </td>
-                          <td className="px-3 py-1.5 font-mono text-pass">{a.pass}</td>
-                          <td className="px-3 py-1.5 font-mono text-amber">{a.amber}</td>
-                          <td className="px-3 py-1.5 font-mono text-fail">{a.fail}</td>
-                          <td className="px-3 py-1.5">
-                            <Chip
-                              text={a.avg >= 5 ? 'Good' : a.avg >= 3 ? 'Watch' : 'Needs Coaching'}
-                              className={a.avg >= 5 ? 'bg-green-100 text-pass' : a.avg >= 3 ? 'bg-yellow-100 text-amber' : 'bg-red-100 text-fail'}
-                            />
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <p className="text-xs text-gray-500 mb-2">{qaAnalysis.scored} calls scored (dur&gt;45s, real transcript)</p>
+                <div className="flex gap-3 text-sm">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded-full bg-pass"></span>
+                    <span className="font-bold text-pass">{qaAnalysis.pass}</span>
+                    <span className="text-xs text-gray-500">Pass</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded-full bg-amber"></span>
+                    <span className="font-bold text-amber">{qaAnalysis.amber}</span>
+                    <span className="text-xs text-gray-500">Amber</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-3 h-3 rounded-full bg-fail"></span>
+                    <span className="font-bold text-fail">{qaAnalysis.fail}</span>
+                    <span className="text-xs text-gray-500">Fail</span>
+                  </div>
+                </div>
+                {/* Score bar */}
+                <div className="flex h-3 rounded-full overflow-hidden mt-2 bg-gray-100">
+                  {qaAnalysis.pass > 0 && <div className="bg-pass" style={{ width: `${(qaAnalysis.pass / qaAnalysis.scored) * 100}%` }} />}
+                  {qaAnalysis.amber > 0 && <div className="bg-amber" style={{ width: `${(qaAnalysis.amber / qaAnalysis.scored) * 100}%` }} />}
+                  {qaAnalysis.fail > 0 && <div className="bg-fail" style={{ width: `${(qaAnalysis.fail / qaAnalysis.scored) * 100}%` }} />}
                 </div>
               </div>
-            )}
-          </div>
-        )}
+
+              {/* Q1-Q6 Failure Breakdown */}
+              <div>
+                <p className="text-xs font-semibold text-gray-600 mb-2">Question Failure Rates</p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {qaAnalysis.qFails.map(q => (
+                    <div key={q.short} className="flex items-center gap-2 text-xs">
+                      <span className="font-bold text-gray-500 w-6">{q.short}</span>
+                      <div className="flex-1 bg-gray-100 rounded-full h-2 relative">
+                        <div className={`h-2 rounded-full ${q.failRate > 50 ? 'bg-fail' : q.failRate > 25 ? 'bg-amber' : 'bg-pass'}`}
+                          style={{ width: `${Math.max(q.failRate, q.failCount > 0 ? 5 : 0)}%` }} />
+                      </div>
+                      <span className={`w-8 text-right font-mono ${q.failRate > 50 ? 'text-fail' : q.failRate > 25 ? 'text-amber' : 'text-gray-500'}`}>
+                        {q.failRate}%
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[10px] text-gray-400">
+                  {qaAnalysis.qFails.map(q => (
+                    <span key={q.short}>{q.short}: {q.label}</span>
+                  ))}
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Agent QA Performance — always visible when welcome calls exist */}
+          {qaAnalysis.agentList.length > 0 ? (
+            <div>
+              <p className="text-xs font-semibold text-gray-600 mb-2">Agent QA Performance</p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-gray-100 text-left text-gray-500">
+                      <th className="px-3 py-1.5">Agent</th>
+                      <th className="px-3 py-1.5">Scored</th>
+                      <th className="px-3 py-1.5">Avg</th>
+                      <th className="px-3 py-1.5">Pass</th>
+                      <th className="px-3 py-1.5">Amber</th>
+                      <th className="px-3 py-1.5">Fail</th>
+                      <th className="px-3 py-1.5">Rating</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {qaAnalysis.agentList.map(a => (
+                      <tr key={a.name} className="border-b border-gray-50 hover:bg-gray-50">
+                        <td className="px-3 py-1.5 font-medium">{a.name}</td>
+                        <td className="px-3 py-1.5 font-mono">{a.total}</td>
+                        <td className="px-3 py-1.5 font-mono font-bold">
+                          <span className={a.avg >= 5 ? 'text-pass' : a.avg >= 3 ? 'text-amber' : 'text-fail'}>{a.avg}/6</span>
+                        </td>
+                        <td className="px-3 py-1.5 font-mono text-pass">{a.pass}</td>
+                        <td className="px-3 py-1.5 font-mono text-amber">{a.amber}</td>
+                        <td className="px-3 py-1.5 font-mono text-fail">{a.fail}</td>
+                        <td className="px-3 py-1.5">
+                          <Chip
+                            text={a.avg >= 5 ? 'Good' : a.avg >= 3 ? 'Watch' : 'Needs Coaching'}
+                            className={a.avg >= 5 ? 'bg-green-100 text-pass' : a.avg >= 3 ? 'bg-yellow-100 text-amber' : 'bg-red-100 text-fail'}
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : qaAnalysis.agentWcList.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-gray-600 mb-2">Agent QA Performance</p>
+              <p className="text-[10px] text-gray-400 mb-2">No calls scored yet — showing welcome call activity per agent</p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-gray-100 text-left text-gray-500">
+                      <th className="px-3 py-1.5">Agent</th>
+                      <th className="px-3 py-1.5">WC Calls</th>
+                      <th className="px-3 py-1.5">Connected</th>
+                      <th className="px-3 py-1.5">Connect %</th>
+                      <th className="px-3 py-1.5">Avg Dur</th>
+                      <th className="px-3 py-1.5">QA Score</th>
+                      <th className="px-3 py-1.5">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {qaAnalysis.agentWcList.map(a => (
+                      <tr key={a.name} className="border-b border-gray-50 hover:bg-gray-50">
+                        <td className="px-3 py-1.5 font-medium">{a.name}</td>
+                        <td className="px-3 py-1.5 font-mono">{a.total}</td>
+                        <td className="px-3 py-1.5 font-mono">{a.connected}</td>
+                        <td className="px-3 py-1.5 font-mono">
+                          <span className={a.connectRate >= 30 ? 'text-pass' : a.connectRate >= 15 ? 'text-amber' : 'text-fail'}>
+                            {a.connectRate}%
+                          </span>
+                        </td>
+                        <td className="px-3 py-1.5 font-mono">{a.avgDur}s</td>
+                        <td className="px-3 py-1.5 font-mono text-gray-400">--</td>
+                        <td className="px-3 py-1.5">
+                          <Chip
+                            text={a.avgDur > 45 ? 'On Track' : 'Short Calls'}
+                            className={a.avgDur > 45 ? 'bg-green-100 text-pass' : 'bg-yellow-100 text-amber'}
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Welcome Call Pipeline — Activation Funnel */}
