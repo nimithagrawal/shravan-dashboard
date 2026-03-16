@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
+import IntradayProgress from './IntradayProgress';
+import { fetchTodaySnapshots } from '../lib/snapshots';
 
 const ALERT_COLORS = {
   CRITICAL: '#DC2626',
@@ -124,6 +126,9 @@ function AgentCard({ record, isAgent }) {
         ))}
       </div>
 
+      {/* Intraday progress — embedded per agent */}
+      <IntradayProgress agentName={agentName} />
+
       {/* Compliance + intraday alert — hidden for AGENT role */}
       {!isAgent && complianceCount > 0 && (
         <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 4,
@@ -214,6 +219,80 @@ function AgentCard({ record, isAgent }) {
   );
 }
 
+function BiggestMovesPanel() {
+  const { role } = useAuth();
+  const [allMoves, setAllMoves] = useState([]);
+
+  useEffect(() => {
+    if (role === 'AGENT') return;
+    // Fetch all today's snapshots across all agents
+    fetchTodaySnapshots(null).then(snaps => {
+      // Group by agent, find biggest single-window delta across Q1-Q6
+      const byAgent = {};
+      for (const s of snaps) {
+        const a = s['Agent Name'];
+        if (!byAgent[a]) byAgent[a] = [];
+        byAgent[a].push(s);
+      }
+
+      const moves = [];
+      for (const [agent, agentSnaps] of Object.entries(byAgent)) {
+        // Sort by Window Number
+        agentSnaps.sort((a, b) => (a['Window Number'] || 0) - (b['Window Number'] || 0));
+        // Compare each snapshot to the one before it
+        for (let i = 1; i < agentSnaps.length; i++) {
+          const prev = agentSnaps[i - 1];
+          const curr = agentSnaps[i];
+          const qKeys = ['Q1','Q2','Q3','Q4','Q5','Q6'];
+          for (const q of qKeys) {
+            const key = `${q} Cumulative Pct`;
+            const p = prev[key] ?? null;
+            const c = curr[key] ?? null;
+            if (p === null || c === null) continue;
+            const d = parseFloat((c - p).toFixed(1));
+            if (Math.abs(d) >= 5) { // only show moves >=5%
+              moves.push({
+                agent, q, delta: d,
+                time: curr['Snapshot Time'],
+                currVal: c,
+              });
+            }
+          }
+        }
+      }
+
+      // Sort by abs delta descending, take top 5
+      moves.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+      setAllMoves(moves.slice(0, 5));
+    });
+  }, [role]);
+
+  if (role === 'AGENT' || !allMoves.length) return null;
+
+  return (
+    <div style={{ background: '#F9FAFB', border: '1px solid #E5E7EB',
+      borderRadius: 6, padding: '10px 14px', marginBottom: 16 }}>
+      <div style={{ fontSize: 11, fontWeight: 600, color: '#6B7280',
+        textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+        Biggest Moves Today
+      </div>
+      {allMoves.map((m, i) => (
+        <div key={i} style={{ display: 'flex', justifyContent: 'space-between',
+          fontSize: 12, marginBottom: 4, color: '#374151' }}>
+          <span>
+            <strong>{m.agent}</strong> &nbsp; {m.q} &nbsp;
+            <span style={{ color: '#9CA3AF' }}>{m.time} window</span>
+          </span>
+          <span style={{ fontWeight: 700,
+            color: m.delta > 0 ? '#16A34A' : '#DC2626' }}>
+            {m.delta > 0 ? '+' : ''}{m.delta}% {m.delta > 0 ? '\u2191' : '\u2193'}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function AgentReview({ data }) {
   const { role, agentName } = useAuth();
   const isAgent = role === 'AGENT';
@@ -274,6 +353,9 @@ export default function AgentReview({ data }) {
       <h2 style={{ fontWeight: 700, fontSize: 18, marginBottom: 16 }}>
         {isAgent ? 'My Performance' : 'Agent Review'}
       </h2>
+
+      {/* Biggest Moves panel — visible to MANAGER and ADMIN only */}
+      <BiggestMovesPanel />
 
       {/* Agent cards */}
       {sorted.map(record => (
