@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react';
 import { maskPhone } from '../lib/helpers';
 
-const PIN = import.meta.env.VITE_REVEAL_PIN || '1234';
+const PIN = '0504';
 
 export default function PhoneNumber({ number, className = '' }) {
   const [revealed, setRevealed] = useState(false);
