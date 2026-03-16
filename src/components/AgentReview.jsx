@@ -11,6 +11,15 @@ const ALERT_ORDER = { CRITICAL: 0, WARNING: 1, WATCH: 2, OK: 3 };
 
 const TREND_ICONS = { Improving: '\u{1F4C8}', Flat: '\u{27A1}\u{FE0F}', Declining: '\u{1F4C9}' };
 
+const Q_LABELS = {
+  Q1: 'Agent Screened',
+  Q2: 'Cashback Correct',
+  Q3: 'WA Link Sent',
+  Q4: 'Hi Attempt Made',
+  Q5: 'Cashback Mechanic',
+  Q6: 'No Improvised Claims',
+};
+
 function isAfter730PM() {
   const now = new Date(Date.now() + 5.5 * 3600000);
   const h = now.getUTCHours();
@@ -22,9 +31,12 @@ function QBar({ label, pct, isTopMiss }) {
   if (pct === null || pct === undefined) return null;
   const color = pct >= 70 ? '#16A34A' : pct >= 40 ? '#D97706' : '#DC2626';
   const bars = Math.round(pct / 10);
+  const desc = Q_LABELS[label] || '';
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-      <span style={{ width: 26, fontSize: 12, fontWeight: isTopMiss ? 700 : 400 }}>{label}</span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+      <span style={{ width: 130, fontSize: 12, fontWeight: isTopMiss ? 700 : 400, whiteSpace: 'nowrap' }}>
+        {label}: {desc}
+      </span>
       <div style={{ display: 'flex', gap: 1 }}>
         {Array.from({ length: 10 }).map((_, i) => (
           <div key={i} style={{ width: 8, height: 10, borderRadius: 1,
@@ -41,6 +53,7 @@ function QBar({ label, pct, isTopMiss }) {
 function AgentCard({ record }) {
   const f = record;
   const [expanded, setExpanded] = useState(false);
+  const [showViolations, setShowViolations] = useState(false);
 
   const alertLevel = f['Alert Level'] || 'OK';
   const borderColor = ALERT_COLORS[alertLevel] || '#E5E7EB';
@@ -104,7 +117,7 @@ function AgentCard({ record }) {
       </div>
 
       {/* Q bars — 2 columns */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 16px', marginBottom: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', marginBottom: 8 }}>
         {qFields.map(({ label, pct }) => (
           <QBar key={label} label={label} pct={pct} isTopMiss={label === topMissLabel} />
         ))}
@@ -142,12 +155,32 @@ function AgentCard({ record }) {
           </a>
         )}
         {complianceCount > 0 && (
-          <button style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4,
+          <button onClick={() => setShowViolations(!showViolations)}
+            style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4,
             background: '#FEE2E2', color: '#B91C1C', border: '1px solid #FECACA', cursor: 'pointer' }}>
-            Violations {'\u{2192}'}
+            {showViolations ? 'Hide Violations \u{2191}' : `Violations (${complianceCount}) \u{2192}`}
           </button>
         )}
       </div>
+
+      {/* Violations detail */}
+      {showViolations && complianceCount > 0 && (
+        <div style={{ marginTop: 10, padding: 10, background: '#FEF2F2',
+          borderRadius: 6, borderLeft: '3px solid #DC2626' }}>
+          <div style={{ fontWeight: 600, fontSize: 12, color: '#B91C1C', marginBottom: 6 }}>
+            COMPLIANCE VIOLATIONS ({complianceCount})
+          </div>
+          <div style={{ fontSize: 12, color: '#7F1D1D', lineHeight: 1.6 }}>
+            {complianceCount} compliance violation(s) flagged today for {agentName}.
+            Review call recordings and address before next shift.
+          </div>
+          {intradayAlert && (
+            <div style={{ fontSize: 12, color: '#991B1B', marginTop: 6, fontStyle: 'italic' }}>
+              {intradayAlert}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Expanded brief */}
       {expanded && isBriefAvailable && (
