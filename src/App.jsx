@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
-import { fetchTodayWithProgress, fetchRecordsForPeriod, fetchOpenCallbacks, fetchHotLeads, fetchLoanSignals, fetchChurnSignals, fetchCallbacksRequested, fetchTransactionIntents, invalidateCache, getLastScrapedTime } from './lib/airtable';
+import { fetchTodayWithProgress, fetchRecordsForPeriod, fetchOpenCallbacks, fetchHotLeads, fetchLoanSignals, fetchChurnSignals, fetchCallbacksRequested, fetchTransactionIntents, fetchTodayCoaching, invalidateCache, getLastScrapedTime } from './lib/airtable';
 import { scrapeAgeStatus, getPeriodDates, getPreviousPeriodDates, formatPeriodLabel } from './lib/helpers';
 import Overview from './components/Overview';
 import VikasQueue from './components/VikasQueue';
 import SamirQueue from './components/SamirQueue';
+import AgentReview from './components/AgentReview';
 
-const TABS = ['Overview', 'Vikas Queue', 'Samir Queue'];
-const TAB_ICONS = ['\u{1F4CA}', '\u{1F4CB}', '\u{1F3AF}'];
+const TABS = ['Overview', 'Vikas Queue', 'Samir Queue', 'Agent Review'];
+const TAB_ICONS = ['\u{1F4CA}', '\u{1F4CB}', '\u{1F3AF}', '\u{1F468}\u{200D}\u{1F3EB}'];
 const PERIODS = [
   { key: 'today', label: 'Today' },
   { key: 'yesterday', label: 'Yesterday' },
@@ -25,6 +26,10 @@ export default function App() {
   const [lastRefresh, setLastRefresh] = useState(null);
   const [lastScraped, setLastScraped] = useState(null);
   const [agentFilter, setAgentFilter] = useState(null);
+
+  // Coaching state (lazy loaded)
+  const [coachingData, setCoachingData] = useState([]);
+  const [coachingLoading, setCoachingLoading] = useState(false);
 
   // Period state
   const [selectedPeriod, setSelectedPeriod] = useState('today');
@@ -105,6 +110,30 @@ export default function App() {
       fetchPeriodData(selectedPeriod, customStart, customEnd);
     }
   }, [selectedPeriod, customStart, customEnd, loading, fetchPeriodData]);
+
+  // Lazy-fetch coaching data when Agent Review tab is active
+  useEffect(() => {
+    if (tab !== 3) return;
+    let cancelled = false;
+    const fetchCoaching = async () => {
+      setCoachingLoading(true);
+      try {
+        const data = await fetchTodayCoaching();
+        if (!cancelled) setCoachingData(data);
+      } catch (e) {
+        console.error('Coaching fetch error:', e);
+      } finally {
+        if (!cancelled) setCoachingLoading(false);
+      }
+    };
+    fetchCoaching();
+    // Auto-refresh every 10 min during calling hours (9AM-8PM IST)
+    const id = setInterval(() => {
+      const istHour = new Date(Date.now() + 5.5 * 3600000).getUTCHours();
+      if (istHour >= 9 && istHour < 20) fetchCoaching();
+    }, 600000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [tab]);
 
   const handlePeriodChange = (key) => {
     setSelectedPeriod(key);
@@ -241,6 +270,15 @@ export default function App() {
             )}
             {tab === 1 && <VikasQueue today={data.today} openCallbacks={data.openCallbacks} onRemove={removeRecord} onRefresh={refresh} />}
             {tab === 2 && <SamirQueue today={data.today} hotLeads={data.hotLeads} loans={data.loans} churn={data.churn} callbacksRequested={data.callbacksRequested} transactionIntents={data.transactionIntents} onRemove={removeRecord} onRefresh={refresh} />}
+            {tab === 3 && (
+              coachingLoading ? (
+                <div className="text-center py-20 text-gray-400">
+                  <p className="text-lg">Loading coaching data...</p>
+                </div>
+              ) : (
+                <AgentReview data={coachingData} />
+              )
+            )}
           </>
         )}
       </main>

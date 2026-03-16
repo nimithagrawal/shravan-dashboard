@@ -164,3 +164,32 @@ export async function patchRecord(recordId, fields) {
   if (!res.ok) throw new Error(`Patch failed ${res.status}`);
   return res.json();
 }
+
+// ── Agent Coaching Log ──
+const COACHING_TABLE = import.meta.env.VITE_AIRTABLE_COACHING_TABLE;
+const COACHING_API = `https://api.airtable.com/v0/${BASE}/${COACHING_TABLE}`;
+
+async function fetchAllCoaching(formula = '') {
+  let all = [];
+  let offset = null;
+  do {
+    const params = new URLSearchParams();
+    if (formula) params.set('filterByFormula', formula);
+    if (offset) params.set('offset', offset);
+    params.set('pageSize', '100');
+    const res = await fetch(`${COACHING_API}?${params}`, { headers: HEADERS });
+    if (!res.ok) throw new Error(`Airtable coaching ${res.status}`);
+    const data = await res.json();
+    all = all.concat(data.records || []);
+    offset = data.offset;
+  } while (offset);
+  return all.map(r => ({ id: r.id, ...r.fields }));
+}
+
+export async function fetchTodayCoaching() {
+  const cached = getCached('coaching_today');
+  if (cached) return cached;
+  const data = await fetchAllCoaching("IS_SAME({Coaching Date}, TODAY(), 'day')");
+  setCache('coaching_today', data);
+  return data;
+}
