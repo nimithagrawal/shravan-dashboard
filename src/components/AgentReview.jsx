@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import IntradayProgress from './IntradayProgress';
+import AgentCallbackBriefing from './AgentCallbackBriefing';
+import PostActivationWasteAlert from './PostActivationWasteAlert';
 import { fetchTodaySnapshots } from '../lib/snapshots';
 
 const ALERT_COLORS = {
@@ -215,6 +217,9 @@ function AgentCard({ record, isAgent }) {
           )}
         </div>
       )}
+
+      {/* Agent Callback Briefing — pending callbacks with drop context */}
+      <AgentCallbackBriefing agentName={agentName} />
     </div>
   );
 }
@@ -341,6 +346,9 @@ export default function AgentReview({ data }) {
 
   return (
     <div style={{ padding: 20 }}>
+
+      {/* Post-Activation Waste Alert — only for vikasAlert users */}
+      <PostActivationWasteAlert />
 
       {/* Vikas alert banner — hidden for AGENT */}
       {criticalWithData.length > 0 && (
