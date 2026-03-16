@@ -3,6 +3,7 @@ import { patchRecord } from '../lib/airtable';
 import { qaScore, qaRating, fmtDuration, ratingColor, computeQAFailureReason, isHumanPickup, kpiColor, computeGist, gistColor, subscriberType, subscriberTypeColor, callLabelColor } from '../lib/helpers';
 import { ExpandableSummary, TranscriptViewer } from './SharedUI';
 import PhoneNumber from './PhoneNumber';
+import { useAuth } from '../context/AuthContext';
 
 function Chip({ text, className }) {
   return <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${className}`}>{text}</span>;
@@ -81,6 +82,8 @@ function ExpandedRow({ r, colSpan }) {
 }
 
 export default function VikasQueue({ today, openCallbacks = [], onRemove, onRefresh }) {
+  const { canDo } = useAuth();
+  const canAction = canDo('canCallbackActions');
   const [expanded, setExpanded] = useState(null);
   const [showFuture, setShowFuture] = useState(false);
   const [showRetry, setShowRetry] = useState(false);
@@ -427,20 +430,24 @@ export default function VikasQueue({ today, openCallbacks = [], onRemove, onRefr
                         <td className="px-4 py-2 text-xs">{r['Callback Time Slot'] || r['Callback Time Window'] || '--'}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <div className="flex gap-1.5">
-                            <button
-                              onClick={() => handleWriteOff(r)}
-                              className="px-3 py-1 text-xs font-medium rounded-lg bg-gray-600 text-white hover:bg-gray-700 active:scale-95 transition-all min-h-[44px] md:min-h-0"
-                            >
-                              Write Off
-                            </button>
-                            <button
-                              onClick={() => handleTryOneMoreDay(r)}
-                              className="px-3 py-1 text-xs font-medium rounded-lg bg-amber text-white hover:bg-yellow-600 active:scale-95 transition-all min-h-[44px] md:min-h-0"
-                            >
-                              +1 Day
-                            </button>
-                          </div>
+                          {canAction ? (
+                            <div className="flex gap-1.5">
+                              <button
+                                onClick={() => handleWriteOff(r)}
+                                className="px-3 py-1 text-xs font-medium rounded-lg bg-gray-600 text-white hover:bg-gray-700 active:scale-95 transition-all min-h-[44px] md:min-h-0"
+                              >
+                                Write Off
+                              </button>
+                              <button
+                                onClick={() => handleTryOneMoreDay(r)}
+                                className="px-3 py-1 text-xs font-medium rounded-lg bg-amber text-white hover:bg-yellow-600 active:scale-95 transition-all min-h-[44px] md:min-h-0"
+                              >
+                                +1 Day
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-gray-400">View only</span>
+                          )}
                         </td>
                       </tr>
                       {expanded === key && <ExpandedRow r={r} colSpan={7} />}
@@ -490,7 +497,11 @@ export default function VikasQueue({ today, openCallbacks = [], onRemove, onRefr
                         <td className="px-4 py-2 text-xs">{r['Callback Time Slot'] || r['Callback Time Window'] || '--'}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ActionButton label="Mark Called" onClick={() => handleMarkCalled(r)} />
+                          {canAction ? (
+                            <ActionButton label="Mark Called" onClick={() => handleMarkCalled(r)} />
+                          ) : (
+                            <span className="text-xs text-gray-400">View only</span>
+                          )}
                         </td>
                       </tr>
                       {expanded === key && <ExpandedRow r={r} colSpan={8} />}
@@ -540,7 +551,11 @@ export default function VikasQueue({ today, openCallbacks = [], onRemove, onRefr
                         <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ActionButton label="Mark Called" onClick={() => handleMarkCalled(r)} />
+                          {canAction ? (
+                            <ActionButton label="Mark Called" onClick={() => handleMarkCalled(r)} />
+                          ) : (
+                            <span className="text-xs text-gray-400">View only</span>
+                          )}
                         </td>
                       </tr>
                       {expanded === key && <ExpandedRow r={r} colSpan={7} />}
@@ -592,7 +607,11 @@ export default function VikasQueue({ today, openCallbacks = [], onRemove, onRefr
                         <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ActionButton label="Done" onClick={() => handleMarkCalled(r)} />
+                          {canAction ? (
+                            <ActionButton label="Done" onClick={() => handleMarkCalled(r)} />
+                          ) : (
+                            <span className="text-xs text-gray-400">View only</span>
+                          )}
                         </td>
                       </tr>
                       {expanded === key && <ExpandedRow r={r} colSpan={8} />}

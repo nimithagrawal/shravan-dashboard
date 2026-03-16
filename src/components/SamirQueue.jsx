@@ -3,6 +3,7 @@ import { patchRecord } from '../lib/airtable';
 import { sentimentScoreColor, fmtDuration, computeGist, gistColor, subscriberType, subscriberTypeColor, callLabelColor } from '../lib/helpers';
 import { ExpandableSummary, TranscriptViewer } from './SharedUI';
 import PhoneNumber from './PhoneNumber';
+import { useAuth } from '../context/AuthContext';
 
 function Chip({ text, className }) {
   return <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${className}`}>{text}</span>;
@@ -143,6 +144,8 @@ function SectionHeader({ title, emoji, count, badgeColor = 'bg-pass' }) {
 }
 
 export default function SamirQueue({ today = [], hotLeads, loans, churn, callbacksRequested = [], transactionIntents = [], onRemove, onRefresh }) {
+  const { canDo } = useAuth();
+  const canOutreach = canDo('canInitiateOutreach');
   const [doneIds, setDoneIds] = useState(new Set());
   const [expanded, setExpanded] = useState(null);
   const [statusOverrides, setStatusOverrides] = useState({}); // { recordId: 'In Progress' | 'Resolved' }
@@ -435,14 +438,18 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                         <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ThreeStateButton
-                            status={getStatus(r)}
-                            onPickUp={() => handlePickUp(r)}
-                            onResolve={() => handleResolve(r, 'transactionIntents', () => {
-                              markDone(r.id, () => handleTransactionDone(r));
-                            })}
-                            color="bg-red-600"
-                          />
+                          {canOutreach ? (
+                            <ThreeStateButton
+                              status={getStatus(r)}
+                              onPickUp={() => handlePickUp(r)}
+                              onResolve={() => handleResolve(r, 'transactionIntents', () => {
+                                markDone(r.id, () => handleTransactionDone(r));
+                              })}
+                              color="bg-red-600"
+                            />
+                          ) : (
+                            <span className="text-xs text-gray-400">View only</span>
+                          )}
                         </td>
                       </tr>
                       {expanded === key && <ExpandedRow r={r} colSpan={10} />}
@@ -492,16 +499,20 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                         <td className="px-4 py-2 text-xs">{r['Customer Objection'] || r['Churn Reason'] || '--'}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ThreeStateButton
-                            status={getStatus(r)}
-                            onPickUp={() => handlePickUp(r)}
-                            onResolve={() => {
-                              setResolvedItems(prev => [...prev, { ...r, _resolvedAt: new Date() }]);
-                              handleComplaintResolved(r);
-                              setStatusOverrides(prev => ({ ...prev, [r.id]: 'Resolved' }));
-                            }}
-                            color="bg-fail"
-                          />
+                          {canOutreach ? (
+                            <ThreeStateButton
+                              status={getStatus(r)}
+                              onPickUp={() => handlePickUp(r)}
+                              onResolve={() => {
+                                setResolvedItems(prev => [...prev, { ...r, _resolvedAt: new Date() }]);
+                                handleComplaintResolved(r);
+                                setStatusOverrides(prev => ({ ...prev, [r.id]: 'Resolved' }));
+                              }}
+                              color="bg-fail"
+                            />
+                          ) : (
+                            <span className="text-xs text-gray-400">View only</span>
+                          )}
                         </td>
                       </tr>
                       {expanded === key && <ExpandedRow r={r} colSpan={8} />}
@@ -564,14 +575,18 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                         <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ThreeStateButton
-                            status={getStatus(r)}
-                            onPickUp={() => handlePickUp(r)}
-                            onResolve={() => handleResolve(r, 'hotLeads', () => {
-                              markDone(r.id, () => handleFollowUp(r));
-                            })}
-                            color="bg-pass"
-                          />
+                          {canOutreach ? (
+                            <ThreeStateButton
+                              status={getStatus(r)}
+                              onPickUp={() => handlePickUp(r)}
+                              onResolve={() => handleResolve(r, 'hotLeads', () => {
+                                markDone(r.id, () => handleFollowUp(r));
+                              })}
+                              color="bg-pass"
+                            />
+                          ) : (
+                            <span className="text-xs text-gray-400">View only</span>
+                          )}
                         </td>
                       </tr>
                       {expanded === key && <ExpandedRow r={r} colSpan={12} />}
@@ -634,14 +649,18 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                         <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ThreeStateButton
-                            status={getStatus(r)}
-                            onPickUp={() => handlePickUp(r)}
-                            onResolve={() => handleResolve(r, 'loans', () => {
-                              markDone(r.id, () => handleLoan(r));
-                            })}
-                            color="bg-info"
-                          />
+                          {canOutreach ? (
+                            <ThreeStateButton
+                              status={getStatus(r)}
+                              onPickUp={() => handlePickUp(r)}
+                              onResolve={() => handleResolve(r, 'loans', () => {
+                                markDone(r.id, () => handleLoan(r));
+                              })}
+                              color="bg-info"
+                            />
+                          ) : (
+                            <span className="text-xs text-gray-400">View only</span>
+                          )}
                         </td>
                       </tr>
                       {expanded === key && <ExpandedRow r={r} colSpan={12} />}
@@ -708,14 +727,18 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                         <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ThreeStateButton
-                            status={getStatus(r)}
-                            onPickUp={() => handlePickUp(r)}
-                            onResolve={() => handleResolve(r, 'churn', () => {
-                              markDone(r.id, () => handleRecovered(r));
-                            })}
-                            color="bg-amber"
-                          />
+                          {canOutreach ? (
+                            <ThreeStateButton
+                              status={getStatus(r)}
+                              onPickUp={() => handlePickUp(r)}
+                              onResolve={() => handleResolve(r, 'churn', () => {
+                                markDone(r.id, () => handleRecovered(r));
+                              })}
+                              color="bg-amber"
+                            />
+                          ) : (
+                            <span className="text-xs text-gray-400">View only</span>
+                          )}
                         </td>
                       </tr>
                       {expanded === key && <ExpandedRow r={r} colSpan={14} />}
@@ -774,14 +797,18 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                         <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
-                          <ThreeStateButton
-                            status={getStatus(r)}
-                            onPickUp={() => handlePickUp(r)}
-                            onResolve={() => handleResolve(r, 'callbacksRequested', () => {
-                              markDone(r.id, () => handleCallbackDone(r));
-                            })}
-                            color="bg-amber"
-                          />
+                          {canOutreach ? (
+                            <ThreeStateButton
+                              status={getStatus(r)}
+                              onPickUp={() => handlePickUp(r)}
+                              onResolve={() => handleResolve(r, 'callbacksRequested', () => {
+                                markDone(r.id, () => handleCallbackDone(r));
+                              })}
+                              color="bg-amber"
+                            />
+                          ) : (
+                            <span className="text-xs text-gray-400">View only</span>
+                          )}
                         </td>
                       </tr>
                       {expanded === key && <ExpandedRow r={r} colSpan={10} />}

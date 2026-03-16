@@ -5,9 +5,11 @@ import Overview from './components/Overview';
 import VikasQueue from './components/VikasQueue';
 import SamirQueue from './components/SamirQueue';
 import AgentReview from './components/AgentReview';
+import AccessDenied from './components/AccessDenied';
+import { useAuth } from './context/AuthContext';
 
-const TABS = ['Overview', 'Vikas Queue', 'Samir Queue', 'Agent Review'];
-const TAB_ICONS = ['\u{1F4CA}', '\u{1F4CB}', '\u{1F3AF}', '\u{1F468}\u{200D}\u{1F3EB}'];
+const ALL_TABS = ['Overview', 'Vikas Queue', 'Samir Queue', 'Agent Review'];
+const ALL_ICONS = ['\u{1F4CA}', '\u{1F4CB}', '\u{1F3AF}', '\u{1F468}\u{200D}\u{1F3EB}'];
 const PERIODS = [
   { key: 'today', label: 'Today' },
   { key: 'yesterday', label: 'Yesterday' },
@@ -19,6 +21,8 @@ const PERIODS = [
 ];
 
 export default function App() {
+  const { user, loading: authLoading, canSeeTab, vikasAlert } = useAuth();
+
   const [tab, setTab] = useState(0);
   const [data, setData] = useState({ today: [], openCallbacks: [], hotLeads: [], loans: [], churn: [], callbacksRequested: [], transactionIntents: [] });
   const [loading, setLoading] = useState(true);
@@ -39,6 +43,12 @@ export default function App() {
   const [prevPeriodRecords, setPrevPeriodRecords] = useState([]);
   const [periodLoading, setPeriodLoading] = useState(false);
   const [periodProgress, setPeriodProgress] = useState(0);
+
+  // Build visible tabs based on role
+  const visibleTabs = ALL_TABS.filter(t => canSeeTab(t));
+
+  // Map visible tab index → actual tab name
+  const currentTabName = visibleTabs[tab] || visibleTabs[0];
 
   // Always fetch today's data + action queues (for Vikas/Samir tabs)
   const refresh = useCallback(async (force = false) => {
@@ -67,10 +77,11 @@ export default function App() {
   }, [selectedPeriod]);
 
   useEffect(() => {
+    if (!user) return; // Don't fetch until auth resolves
     refresh();
     const id = setInterval(refresh, 300000); // 5 min
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [refresh, user]);
 
   // Fetch period data when period changes
   const fetchPeriodData = useCallback(async (period, cs, ce) => {
@@ -106,14 +117,14 @@ export default function App() {
   }, [data.today]);
 
   useEffect(() => {
-    if (!loading) {
+    if (!loading && user) {
       fetchPeriodData(selectedPeriod, customStart, customEnd);
     }
-  }, [selectedPeriod, customStart, customEnd, loading, fetchPeriodData]);
+  }, [selectedPeriod, customStart, customEnd, loading, fetchPeriodData, user]);
 
   // Lazy-fetch coaching data when Agent Review tab is active
   useEffect(() => {
-    if (tab !== 3) return;
+    if (currentTabName !== 'Agent Review') return;
     let cancelled = false;
     const fetchCoaching = async () => {
       setCoachingLoading(true);
@@ -133,7 +144,7 @@ export default function App() {
       if (istHour >= 9 && istHour < 20) fetchCoaching();
     }, 600000);
     return () => { cancelled = true; clearInterval(id); };
-  }, [tab]);
+  }, [currentTabName]);
 
   const handlePeriodChange = (key) => {
     setSelectedPeriod(key);
@@ -143,6 +154,16 @@ export default function App() {
   const removeRecord = (key, recordId) => {
     setData(prev => ({ ...prev, [key]: prev[key].filter(r => r.id !== recordId) }));
   };
+
+  // ── Auth gates ──
+  if (authLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen text-gray-400" style={{ fontFamily: 'Arial' }}>
+        Loading...
+      </div>
+    );
+  }
+  if (!user) return <AccessDenied />;
 
   const scrapeAge = scrapeAgeStatus(lastScraped);
   const { start: periodStart, end: periodEnd } = getPeriodDates(selectedPeriod, customStart, customEnd);
@@ -177,10 +198,23 @@ export default function App() {
         </div>
       </header>
 
-      {/* Desktop top tabs */}
+      {/* Vikas alert banner — only for vikasAlert users */}
+      {vikasAlert && data.today.length > 0 && (() => {
+        const critAgents = coachingData.filter(a => a['Alert Level'] === 'CRITICAL' && (a['Connected Calls'] || 0) >= 3);
+        if (critAgents.length === 0) return null;
+        return (
+          <div className="bg-red-50 border-b border-red-200 px-4 py-2">
+            <p className="max-w-7xl mx-auto text-xs text-red-800 font-semibold">
+              &#x26A0;&#xFE0F; Action Required: {critAgents.map(a => a['Agent Name']).join(', ')} — CRITICAL status. Intervene before next shift.
+            </p>
+          </div>
+        );
+      })()}
+
+      {/* Desktop top tabs — only visible tabs */}
       <nav className="hidden md:block sticky top-[53px] z-40 bg-white border-b border-gray-200">
         <div className="max-w-7xl mx-auto flex">
-          {TABS.map((t, i) => (
+          {visibleTabs.map((t, i) => (
             <button
               key={t}
               onClick={() => { setTab(i); setAgentFilter(null); }}
@@ -195,7 +229,7 @@ export default function App() {
       </nav>
 
       {/* Period selector — Overview tab only */}
-      {tab === 0 && !loading && (
+      {currentTabName === 'Overview' && !loading && (
         <div className="bg-white border-b border-gray-200">
           <div className="max-w-7xl mx-auto px-4 py-2">
             <div className="flex flex-wrap items-center gap-1.5">
@@ -249,7 +283,7 @@ export default function App() {
           </div>
         ) : (
           <>
-            {tab === 0 && (
+            {currentTabName === 'Overview' && (
               periodLoading ? (
                 <div className="text-center py-20 text-gray-400">
                   <p className="text-lg">Loading calls...</p>
@@ -268,9 +302,9 @@ export default function App() {
                 />
               )
             )}
-            {tab === 1 && <VikasQueue today={data.today} openCallbacks={data.openCallbacks} onRemove={removeRecord} onRefresh={refresh} />}
-            {tab === 2 && <SamirQueue today={data.today} hotLeads={data.hotLeads} loans={data.loans} churn={data.churn} callbacksRequested={data.callbacksRequested} transactionIntents={data.transactionIntents} onRemove={removeRecord} onRefresh={refresh} />}
-            {tab === 3 && (
+            {currentTabName === 'Vikas Queue' && <VikasQueue today={data.today} openCallbacks={data.openCallbacks} onRemove={removeRecord} onRefresh={refresh} />}
+            {currentTabName === 'Samir Queue' && <SamirQueue today={data.today} hotLeads={data.hotLeads} loans={data.loans} churn={data.churn} callbacksRequested={data.callbacksRequested} transactionIntents={data.transactionIntents} onRemove={removeRecord} onRefresh={refresh} />}
+            {currentTabName === 'Agent Review' && (
               coachingLoading ? (
                 <div className="text-center py-20 text-gray-400">
                   <p className="text-lg">Loading coaching data...</p>
@@ -283,21 +317,24 @@ export default function App() {
         )}
       </main>
 
-      {/* Mobile bottom tab bar */}
+      {/* Mobile bottom tab bar — only visible tabs */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-white border-t border-gray-200 safe-area-bottom">
         <div className="flex">
-          {TABS.map((t, i) => (
-            <button
-              key={t}
-              onClick={() => { setTab(i); setAgentFilter(null); }}
-              className={`flex-1 py-2 flex flex-col items-center gap-0.5 text-xs font-medium transition-colors ${
-                tab === i ? 'text-info' : 'text-gray-400'
-              }`}
-            >
-              <span className="text-lg">{TAB_ICONS[i]}</span>
-              {t}
-            </button>
-          ))}
+          {visibleTabs.map((t, i) => {
+            const icon = ALL_ICONS[ALL_TABS.indexOf(t)];
+            return (
+              <button
+                key={t}
+                onClick={() => { setTab(i); setAgentFilter(null); }}
+                className={`flex-1 py-2 flex flex-col items-center gap-0.5 text-xs font-medium transition-colors ${
+                  tab === i ? 'text-info' : 'text-gray-400'
+                }`}
+              >
+                <span className="text-lg">{icon}</span>
+                {t}
+              </button>
+            );
+          })}
         </div>
       </nav>
     </div>

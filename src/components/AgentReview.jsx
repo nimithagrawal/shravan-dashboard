@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useAuth } from '../context/AuthContext';
 
 const ALERT_COLORS = {
   CRITICAL: '#DC2626',
@@ -20,11 +21,11 @@ const Q_LABELS = {
   Q6: 'No Improvised Claims',
 };
 
-function isAfter730PM() {
+function isAfter610PM() {
   const now = new Date(Date.now() + 5.5 * 3600000);
   const h = now.getUTCHours();
   const m = now.getUTCMinutes();
-  return h > 19 || (h === 19 && m >= 30);
+  return h > 18 || (h === 18 && m >= 10);
 }
 
 function QBar({ label, pct, isTopMiss }) {
@@ -50,7 +51,7 @@ function QBar({ label, pct, isTopMiss }) {
   );
 }
 
-function AgentCard({ record }) {
+function AgentCard({ record, isAgent }) {
   const f = record;
   const [expanded, setExpanded] = useState(false);
   const [showViolations, setShowViolations] = useState(false);
@@ -77,7 +78,7 @@ function AgentCard({ record }) {
 
   const trendIcon = TREND_ICONS[trend] || '';
   const isBriefAvailable = coachingBrief.length > 0;
-  const after730 = isAfter730PM();
+  const after610 = isAfter610PM();
   const topMissLabel = topMiss.match(/Q\d/)?.[0];
 
   const qFields = [
@@ -123,28 +124,28 @@ function AgentCard({ record }) {
         ))}
       </div>
 
-      {/* Compliance + intraday alert */}
-      {complianceCount > 0 && (
+      {/* Compliance + intraday alert — hidden for AGENT role */}
+      {!isAgent && complianceCount > 0 && (
         <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 4,
           padding: '4px 8px', fontSize: 12, color: '#B91C1C', marginBottom: 6 }}>
           {'\u{1F6A8}'} {complianceCount} compliance violation(s) today
         </div>
       )}
-      {intradayAlert && !after730 && (
+      {intradayAlert && !after610 && (
         <div style={{ fontSize: 12, color: '#6B7280', marginBottom: 6 }}>{intradayAlert}</div>
       )}
 
       {/* Action buttons */}
       <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-        {after730 && isBriefAvailable && (
+        {after610 && isBriefAvailable && (
           <button onClick={() => setExpanded(!expanded)}
             style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4,
               background: '#1D4ED8', color: '#fff', border: 'none', cursor: 'pointer' }}>
             {expanded ? 'Hide Brief \u{2191}' : 'View Full Brief \u{2193}'}
           </button>
         )}
-        {!after730 && (
-          <span style={{ fontSize: 12, color: '#9CA3AF' }}>Coaching brief available after 7:30 PM</span>
+        {!after610 && (
+          <span style={{ fontSize: 12, color: '#9CA3AF' }}>Coaching brief available after 6:10 PM</span>
         )}
         {bestCallURL && (
           <a href={bestCallURL} target="_blank" rel="noreferrer"
@@ -154,7 +155,7 @@ function AgentCard({ record }) {
             {'\u{1F3A7}'} Best call ({bestCallId})
           </a>
         )}
-        {complianceCount > 0 && (
+        {!isAgent && complianceCount > 0 && (
           <button onClick={() => setShowViolations(!showViolations)}
             style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4,
             background: '#FEE2E2', color: '#B91C1C', border: '1px solid #FECACA', cursor: 'pointer' }}>
@@ -201,7 +202,7 @@ function AgentCard({ record }) {
               {'\u{26A0}\u{FE0F}'} PATTERN FLAG: {patternFlag}
             </div>
           )}
-          {worstPattern && (
+          {!isAgent && worstPattern && (
             <div style={{ background: '#FEE2E2', border: '1px solid #FECACA', borderRadius: 4,
               padding: '6px 10px', fontSize: 12, color: '#B91C1C', marginTop: 6 }}>
               {'\u{1F501}'} STUCK PATTERN: {worstPattern}
@@ -214,45 +215,55 @@ function AgentCard({ record }) {
 }
 
 export default function AgentReview({ data }) {
-  if (!data || data.length === 0) {
+  const { role, agentName } = useAuth();
+  const isAgent = role === 'AGENT';
+
+  // AGENT role: filter to only their own card
+  const visibleData = isAgent && agentName
+    ? data.filter(r => (r['Agent Name'] || '').toLowerCase() === agentName.toLowerCase())
+    : data;
+
+  if (!visibleData || visibleData.length === 0) {
     return (
       <div style={{ padding: 20, textAlign: 'center', color: '#9CA3AF' }}>
-        No coaching data available for today. Data populates after the first scrape cycle.
+        {isAgent
+          ? 'No coaching data available for you today. Data populates after the first scrape cycle.'
+          : 'No coaching data available for today. Data populates after the first scrape cycle.'}
       </div>
     );
   }
 
   // Sort: CRITICAL first
-  const sorted = [...data].sort((a, b) => {
+  const sorted = [...visibleData].sort((a, b) => {
     const aLevel = a['Alert Level'] || 'OK';
     const bLevel = b['Alert Level'] || 'OK';
     return (ALERT_ORDER[aLevel] ?? 4) - (ALERT_ORDER[bLevel] ?? 4);
   });
 
-  // Team summary
-  const teamQAAvg = data.length > 0
+  // Team summary (only computed for non-AGENT roles)
+  const teamQAAvg = !isAgent && data.length > 0
     ? (data.reduce((s, a) => s + (a['QA Score Today'] || 0), 0) / data.length).toFixed(2)
     : '\u{2014}';
-  const q2Values = data.map(a => a['Q2 Pass Pct']).filter(v => v !== null && v !== undefined);
+  const q2Values = !isAgent ? data.map(a => a['Q2 Pass Pct']).filter(v => v !== null && v !== undefined) : [];
   const teamQ2Avg = q2Values.length > 0
     ? (q2Values.reduce((s, v) => s + v, 0) / q2Values.length).toFixed(0)
     : '\u{2014}';
-  const totalCompliance = data.reduce((s, a) => s + (a['Compliance Count Today'] || 0), 0);
-  const avgCoverage = data.length > 0
+  const totalCompliance = !isAgent ? data.reduce((s, a) => s + (a['Compliance Count Today'] || 0), 0) : 0;
+  const avgCoverage = !isAgent && data.length > 0
     ? (data.reduce((s, a) => s + (a['QA Coverage Pct'] || 0), 0) / data.length).toFixed(0)
     : '\u{2014}';
-  const criticalCount = data.filter(a => a['Alert Level'] === 'CRITICAL').length;
-  const improvingCount = data.filter(a => a['Trend'] === 'Improving').length;
+  const criticalCount = !isAgent ? data.filter(a => a['Alert Level'] === 'CRITICAL').length : 0;
+  const improvingCount = !isAgent ? data.filter(a => a['Trend'] === 'Improving').length : 0;
 
-  // Vikas alert banner
-  const criticalWithData = data.filter(a =>
-    a['Alert Level'] === 'CRITICAL' && (a['Connected Calls'] || 0) >= 3
-  );
+  // Vikas alert banner (hidden for AGENT role)
+  const criticalWithData = !isAgent
+    ? data.filter(a => a['Alert Level'] === 'CRITICAL' && (a['Connected Calls'] || 0) >= 3)
+    : [];
 
   return (
     <div style={{ padding: 20 }}>
 
-      {/* Vikas alert banner */}
+      {/* Vikas alert banner — hidden for AGENT */}
       {criticalWithData.length > 0 && (
         <div style={{ background: '#FEE2E2', border: '1px solid #FECACA', borderRadius: 6,
           padding: '10px 14px', marginBottom: 16, fontSize: 13, color: '#B91C1C' }}>
@@ -260,26 +271,30 @@ export default function AgentReview({ data }) {
         </div>
       )}
 
-      <h2 style={{ fontWeight: 700, fontSize: 18, marginBottom: 16 }}>Agent Review</h2>
+      <h2 style={{ fontWeight: 700, fontSize: 18, marginBottom: 16 }}>
+        {isAgent ? 'My Performance' : 'Agent Review'}
+      </h2>
 
       {/* Agent cards */}
       {sorted.map(record => (
-        <AgentCard key={record.id} record={record} />
+        <AgentCard key={record.id} record={record} isAgent={isAgent} />
       ))}
 
-      {/* Team summary bar */}
-      <div style={{ background: '#F3F4F6', borderRadius: 6, padding: '10px 14px',
-        fontSize: 12, color: '#6B7280', marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-        <span>Team Avg: <strong>{teamQAAvg}/6</strong></span>
-        <span>Q2 Team Rate: <strong>{teamQ2Avg}%</strong></span>
-        <span>Compliance: <strong>{totalCompliance}</strong> today</span>
-        <span>QA Coverage: <strong>{avgCoverage}%</strong>{Number(avgCoverage) < 50 ? ' \u{26A0}\u{FE0F}' : ''}</span>
-        <span>Improving: <strong>{improvingCount}</strong></span>
-        <span>Critical: <strong style={{ color: criticalCount > 0 ? '#DC2626' : 'inherit' }}>{criticalCount}</strong></span>
-        {Number(teamQ2Avg) < 30 && (
-          <span style={{ color: '#D97706' }}>{'\u{26A0}\u{FE0F}'} Q2 failure is team-wide — check script/training, not just individuals</span>
-        )}
-      </div>
+      {/* Team summary bar — hidden for AGENT role */}
+      {!isAgent && (
+        <div style={{ background: '#F3F4F6', borderRadius: 6, padding: '10px 14px',
+          fontSize: 12, color: '#6B7280', marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+          <span>Team Avg: <strong>{teamQAAvg}/6</strong></span>
+          <span>Q2 Team Rate: <strong>{teamQ2Avg}%</strong></span>
+          <span>Compliance: <strong>{totalCompliance}</strong> today</span>
+          <span>QA Coverage: <strong>{avgCoverage}%</strong>{Number(avgCoverage) < 50 ? ' \u{26A0}\u{FE0F}' : ''}</span>
+          <span>Improving: <strong>{improvingCount}</strong></span>
+          <span>Critical: <strong style={{ color: criticalCount > 0 ? '#DC2626' : 'inherit' }}>{criticalCount}</strong></span>
+          {Number(teamQ2Avg) < 30 && (
+            <span style={{ color: '#D97706' }}>{'\u{26A0}\u{FE0F}'} Q2 failure is team-wide — check script/training, not just individuals</span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
