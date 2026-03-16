@@ -116,9 +116,15 @@ function AgentCard({ record, isAgent }) {
       {/* QA summary */}
       <div style={{ fontSize: 13, color: '#374151', marginBottom: 8 }}>
         Today: <strong>{qaAvg}/6</strong> &nbsp;|&nbsp;
-        {scored}/{connected} calls scored ({coverage}%{coverage < 50 ? ' \u{26A0}\u{FE0F}' : ''}) &nbsp;|&nbsp;
+        {scored}/{connected} full pitch calls scored ({coverage}%{coverage < 50 ? ' \u{26A0}\u{FE0F}' : ''}) &nbsp;|&nbsp;
         7d avg: <strong>{qa7d !== null && qa7d !== undefined ? `${qa7d}/6` : '\u{2014}'}</strong>
         {trackingDay <= 7 && <span style={{ color: '#9CA3AF' }}> (establishing baseline)</span>}
+        {(() => {
+          const excluded = (f['Disputed Calls'] || 0) + (f['CSP Calls'] || 0) + (f['Language Barrier Calls'] || 0);
+          return excluded > 0 ? (
+            <span style={{ color: '#9CA3AF', fontSize: 11 }}> &nbsp;({excluded} excluded from QA)</span>
+          ) : null;
+        })()}
       </div>
 
       {/* Q bars — 2 columns */}
@@ -127,6 +133,36 @@ function AgentCard({ record, isAgent }) {
           <QBar key={label} label={label} pct={pct} isTopMiss={label === topMissLabel} />
         ))}
       </div>
+
+      {/* Call mix badges — Disputed / CSP / Language Barrier */}
+      {(() => {
+        const disputedCalls = f['Disputed Calls'] || 0;
+        const cspCalls = f['CSP Calls'] || 0;
+        const languageBarrierCalls = f['Language Barrier Calls'] || 0;
+        const hasSpecialCalls = disputedCalls > 0 || cspCalls > 0 || languageBarrierCalls > 0;
+        return hasSpecialCalls ? (
+          <div style={{ display: 'flex', gap: 8, marginTop: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+            {disputedCalls > 0 && (
+              <span style={{ background: '#FEF2F2', color: '#B91C1C', fontSize: 11,
+                borderRadius: 4, padding: '2px 8px', fontWeight: 600 }}>
+                {'\u{26A0}\u{FE0F}'} {disputedCalls} Disputed
+              </span>
+            )}
+            {cspCalls > 0 && (
+              <span style={{ background: '#F5F3FF', color: '#7C3AED', fontSize: 11,
+                borderRadius: 4, padding: '2px 8px', fontWeight: 600 }}>
+                {'\u{1F3EA}'} {cspCalls} Agent/CSP
+              </span>
+            )}
+            {languageBarrierCalls > 0 && (
+              <span style={{ background: '#F0FDFA', color: '#0F766E', fontSize: 11,
+                borderRadius: 4, padding: '2px 8px', fontWeight: 600 }}>
+                {'\u{1F5E3}\u{FE0F}'} {languageBarrierCalls} Language Barrier
+              </span>
+            )}
+          </div>
+        ) : null;
+      })()}
 
       {/* Intraday progress — embedded per agent */}
       <IntradayProgress agentName={agentName} />
@@ -217,6 +253,23 @@ function AgentCard({ record, isAgent }) {
           )}
         </div>
       )}
+
+      {/* HiL Review Badge */}
+      {(() => {
+        const hilReviewCount = f['HiL Review Count Today'] || 0;
+        const hilComplianceCaught = f['HiL Compliance Caught'] || 0;
+        return hilReviewCount > 0 ? (
+          <div style={{ background: '#EFF6FF', border: '1px solid #BFDBFE',
+            borderRadius: 4, padding: '6px 10px', marginTop: 6, fontSize: 11 }}>
+            {'\u{1F50D}'} <strong>{hilReviewCount} calls human-reviewed today</strong>
+            {hilComplianceCaught > 0 && (
+              <span style={{ color: '#DC2626', marginLeft: 8 }}>
+                {hilComplianceCaught} compliance issue(s) found by reviewer
+              </span>
+            )}
+          </div>
+        ) : null;
+      })()}
 
       {/* Agent Callback Briefing — pending callbacks with drop context */}
       <AgentCallbackBriefing agentName={agentName} />
@@ -364,6 +417,40 @@ export default function AgentReview({ data }) {
 
       {/* Biggest Moves panel — visible to MANAGER and ADMIN only */}
       <BiggestMovesPanel />
+
+      {/* Disputed Calls Escalation Panel — MANAGER/ADMIN only */}
+      {!isAgent && (() => {
+        const totalDisputed = data.reduce((s, a) => s + (a['Disputed Calls'] || 0), 0);
+        const totalCSP = data.reduce((s, a) => s + (a['CSP Calls'] || 0), 0);
+        const totalLB = data.reduce((s, a) => s + (a['Language Barrier Calls'] || 0), 0);
+        if (totalDisputed === 0 && totalCSP === 0 && totalLB === 0) return null;
+        return (
+          <div style={{ background: '#FFF7ED', border: '1px solid #FED7AA', borderRadius: 6,
+            padding: '10px 14px', marginBottom: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: '#9A3412',
+              textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
+              {'\u{1F50D}'} Special Call Types Today
+            </div>
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12 }}>
+              {totalDisputed > 0 && (
+                <span style={{ color: '#B91C1C' }}>
+                  <strong>{totalDisputed}</strong> Disputed — subscribers denied purchase (partner investigation needed)
+                </span>
+              )}
+              {totalCSP > 0 && (
+                <span style={{ color: '#7C3AED' }}>
+                  <strong>{totalCSP}</strong> Agent/CSP — distribution partners on call list (route to Pankaj)
+                </span>
+              )}
+              {totalLB > 0 && (
+                <span style={{ color: '#0F766E' }}>
+                  <strong>{totalLB}</strong> Language Barrier — flag for multilingual routing
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Agent cards */}
       {sorted.map(record => (
