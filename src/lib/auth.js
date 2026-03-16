@@ -5,8 +5,8 @@ const AIRTABLE_USERS_URL = `https://api.airtable.com/v0/${BASE}/${USERS_TABLE}`;
 
 // Tab permissions per role
 export const TAB_PERMISSIONS = {
-  ADMIN:   ['Overview', 'Vikas Queue', 'Samir Queue', 'Agent Review'],
-  MANAGER: ['Overview', 'Vikas Queue', 'Samir Queue', 'Agent Review'],
+  ADMIN:   ['Overview', 'Vikas Queue', 'Samir Queue', 'Agent Review', 'Pitch Performance'],
+  MANAGER: ['Overview', 'Vikas Queue', 'Samir Queue', 'Agent Review', 'Pitch Performance'],
   CX:      ['Samir Queue'],
   AGENT:   ['Agent Review'],
 };

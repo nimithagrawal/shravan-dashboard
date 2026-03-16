@@ -5,11 +5,12 @@ import Overview from './components/Overview';
 import VikasQueue from './components/VikasQueue';
 import SamirQueue from './components/SamirQueue';
 import AgentReview from './components/AgentReview';
+import PitchPerformance from './components/PitchPerformance';
 import AccessDenied from './components/AccessDenied';
 import { useAuth } from './context/AuthContext';
 
-const ALL_TABS = ['Overview', 'Vikas Queue', 'Samir Queue', 'Agent Review'];
-const ALL_ICONS = ['\u{1F4CA}', '\u{1F4CB}', '\u{1F3AF}', '\u{1F468}\u{200D}\u{1F3EB}'];
+const ALL_TABS = ['Overview', 'Vikas Queue', 'Samir Queue', 'Agent Review', 'Pitch Performance'];
+const ALL_ICONS = ['\u{1F4CA}', '\u{1F4CB}', '\u{1F3AF}', '\u{1F468}\u{200D}\u{1F3EB}', '\u{1F3A4}'];
 const PERIODS = [
   { key: 'today', label: 'Today' },
   { key: 'yesterday', label: 'Yesterday' },
@@ -313,6 +314,7 @@ export default function App() {
                 <AgentReview data={coachingData} />
               )
             )}
+            {currentTabName === 'Pitch Performance' && <PitchPerformance />}
           </>
         )}
       </main>

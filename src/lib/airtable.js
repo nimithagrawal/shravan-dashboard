@@ -193,3 +193,87 @@ export async function fetchTodayCoaching() {
   setCache('coaching_today', data);
   return data;
 }
+
+// ── Pitch Versions & Suggestions ──
+const PV_TABLE = import.meta.env.VITE_AIRTABLE_PITCH_VERSIONS_TABLE;
+const PS_TABLE = import.meta.env.VITE_AIRTABLE_PITCH_SUGGESTIONS_TABLE;
+const PV_API = `https://api.airtable.com/v0/${BASE}/${PV_TABLE}`;
+const PS_API = `https://api.airtable.com/v0/${BASE}/${PS_TABLE}`;
+
+export async function fetchAllPitchVersions() {
+  const url = new URL(PV_API);
+  url.searchParams.set('sort[0][field]',     'Active From');
+  url.searchParams.set('sort[0][direction]', 'asc');
+  const res = await fetch(url.toString(), { headers: HEADERS });
+  const data = await res.json();
+  return (data.records || []).map(r => ({ id: r.id, ...r.fields }));
+}
+
+export async function fetchLatestSuggestion() {
+  const url = new URL(PS_API);
+  url.searchParams.set('sort[0][field]',     'Suggestion Date');
+  url.searchParams.set('sort[0][direction]', 'desc');
+  url.searchParams.set('maxRecords',         '3');
+  const res = await fetch(url.toString(), { headers: HEADERS });
+  const data = await res.json();
+  return (data.records || []).map(r => ({ id: r.id, ...r.fields }));
+}
+
+export async function updateSuggestionStatus(recordId, status, nimithNotes) {
+  await fetch(`${PS_API}/${recordId}`, {
+    method: 'PATCH',
+    headers: { ...HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields: {
+      'Status':       status,
+      'Nimith Notes': nimithNotes || '',
+    }, typecast: true })
+  });
+}
+
+export async function approveAndCreateVersion(suggestionId, currentVersionId, suggestion) {
+  // 1. Mark old version as Superseded
+  const allVersions = await fetchAllPitchVersions();
+  const active = allVersions.find(v => v['Status'] === 'Active');
+  if (active) {
+    await fetch(`${PV_API}/${active.id}`, {
+      method: 'PATCH',
+      headers: { ...HEADERS, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fields: {
+        'Status':    'Superseded',
+        'Active To': new Date().toISOString().split('T')[0],
+      }, typecast: true })
+    });
+  }
+
+  // 2. Compute new version ID
+  const lastVersion = allVersions[allVersions.length - 1];
+  const lastNum = parseFloat(lastVersion?.['Version ID']?.replace('v','') || '1.0');
+  const newVersionId = `v${(lastNum + 0.1).toFixed(1)}`;
+
+  // 3. Create new Pitch Version
+  await fetch(PV_API, {
+    method: 'POST',
+    headers: { ...HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ records: [{ fields: {
+      'Version ID':        newVersionId,
+      'Active From':       new Date(Date.now() + 86400000).toISOString().split('T')[0],
+      'What Changed':      suggestion['Recommended Change'],
+      'Full Script':       suggestion['New Script Section'],
+      'Hypothesis':        suggestion['Hypothesis'],
+      'Status':            'Active',
+      'Hypothesis Verdict': 'Pending',
+    }}], typecast: true })
+  });
+
+  // 4. Mark suggestion as Approved and link version
+  await fetch(`${PS_API}/${suggestionId}`, {
+    method: 'PATCH',
+    headers: { ...HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fields: {
+      'Status':                 'Approved',
+      'Implemented As Version': newVersionId,
+    }, typecast: true })
+  });
+
+  return newVersionId;
+}
