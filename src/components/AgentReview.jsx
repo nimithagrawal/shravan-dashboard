@@ -113,19 +113,30 @@ function AgentCard({ record, isAgent }) {
         </span>
       </div>
 
-      {/* QA summary */}
-      <div style={{ fontSize: 13, color: '#374151', marginBottom: 8 }}>
-        Today: <strong>{qaAvg}/6</strong> &nbsp;|&nbsp;
-        {scored}/{connected} full pitch calls scored ({coverage}%{coverage < 50 ? ' \u{26A0}\u{FE0F}' : ''}) &nbsp;|&nbsp;
-        7d avg: <strong>{qa7d !== null && qa7d !== undefined ? `${qa7d}/6` : '\u{2014}'}</strong>
-        {trackingDay <= 7 && <span style={{ color: '#9CA3AF' }}> (establishing baseline)</span>}
-        {(() => {
-          const excluded = (f['Disputed Calls'] || 0) + (f['CSP Calls'] || 0) + (f['Language Barrier Calls'] || 0);
-          return excluded > 0 ? (
-            <span style={{ color: '#9CA3AF', fontSize: 11 }}> &nbsp;({excluded} excluded from QA)</span>
-          ) : null;
-        })()}
-      </div>
+      {/* QA summary — denominator uses Full Pitch calls only */}
+      {(() => {
+        const disputedCalls = f['Disputed Calls'] || 0;
+        const cspCalls = f['CSP Calls'] || 0;
+        const languageBarrierCalls = f['Language Barrier Calls'] || 0;
+        const excludedFromQA = disputedCalls + cspCalls + languageBarrierCalls;
+        const excludedParts = [];
+        if (cspCalls > 0) excludedParts.push(`${cspCalls} Agent/CSP`);
+        if (disputedCalls > 0) excludedParts.push(`${disputedCalls} Disputed`);
+        if (languageBarrierCalls > 0) excludedParts.push(`${languageBarrierCalls} Lang Barrier`);
+        return (
+          <div style={{ fontSize: 13, color: '#374151', marginBottom: 8 }}>
+            QA: <strong>{qaAvg}/6</strong> ({scored} Full Pitch calls)
+            {excludedFromQA > 0 && (
+              <span style={{ color: '#9CA3AF', fontSize: 11 }}>
+                &nbsp;&nbsp;|&nbsp;&nbsp;+{excludedFromQA} excluded ({excludedParts.join(', ')})
+              </span>
+            )}
+            &nbsp;&nbsp;|&nbsp;&nbsp;Coverage: {coverage}%{coverage < 50 ? ' \u{26A0}\u{FE0F}' : ''}
+            &nbsp;&nbsp;|&nbsp;&nbsp;7d avg: <strong>{qa7d !== null && qa7d !== undefined ? `${qa7d}/6` : '\u{2014}'}</strong>
+            {trackingDay <= 7 && <span style={{ color: '#9CA3AF' }}> (establishing baseline)</span>}
+          </div>
+        );
+      })()}
 
       {/* Q bars — 2 columns */}
       <div style={{ display: 'flex', flexDirection: 'column', marginBottom: 8 }}>
