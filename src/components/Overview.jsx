@@ -13,7 +13,19 @@ import {
 import { ExpandableSummary, TranscriptViewer } from './SharedUI';
 import PhoneNumber from './PhoneNumber';
 
-function KpiCard({ label, value, color, badge, comparison, subtitle }) {
+function ChangeChip({ value, label }) {
+  if (value == null) return null;
+  const arrow = value >= 0 ? '\u2191' : '\u2193';
+  const color = value >= 0 ? 'text-pass' : 'text-fail';
+  return (
+    <span className={`${color} whitespace-nowrap`}>
+      {arrow}{value >= 0 ? '+' : ''}{value}% {label}
+    </span>
+  );
+}
+
+function KpiCard({ label, value, color, badge, comparison, comparisons, subtitle }) {
+  const hasMulti = comparisons && (comparisons.daily != null || comparisons.weekly != null || comparisons.monthly != null);
   return (
     <div className="bg-card rounded-xl p-4 shadow-sm border border-gray-100 relative">
       <p className="text-xs text-gray-500 mb-1">{label}</p>
@@ -22,7 +34,13 @@ function KpiCard({ label, value, color, badge, comparison, subtitle }) {
       {badge != null && badge > 0 && (
         <span className="absolute top-2 right-2 bg-fail text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">{badge}</span>
       )}
-      {comparison != null && (
+      {hasMulti ? (
+        <div className="flex flex-wrap gap-x-2 gap-y-0.5 mt-1 text-[10px]">
+          <ChangeChip value={comparisons.daily} label="d" />
+          <ChangeChip value={comparisons.weekly} label="w" />
+          <ChangeChip value={comparisons.monthly} label="m" />
+        </div>
+      ) : comparison != null && (
         <p className={`text-[10px] mt-0.5 ${comparison >= 0 ? 'text-pass' : 'text-fail'}`}>
           {comparison >= 0 ? '\u2191' : '\u2193'} {comparison >= 0 ? '+' : ''}{comparison}% vs prev
         </p>
@@ -42,7 +60,7 @@ function pctChange(curr, prev) {
   return Math.round(((curr - prev) / prev) * 100);
 }
 
-export default function Overview({ records, prevRecords = [], period, periodStart, periodEnd, agentFilter, setAgentFilter, onRefresh }) {
+export default function Overview({ records, prevRecords = [], comparisonData = {}, period, periodStart, periodEnd, agentFilter, setAgentFilter, onRefresh }) {
   const [expanded, setExpanded] = useState(null);
   const [search, setSearch] = useState('');
   const [filterAgent, setFilterAgent] = useState('');
@@ -122,6 +140,32 @@ export default function Overview({ records, prevRecords = [], period, periodStar
   const cmpTotal = pctChange(total, prevTotal);
   const cmpPickup = pctChange(humanPickupRate, prevPickupRate);
   const cmpTalkTime = pctChange(totalTalkTimeSec, prevTalkTime);
+
+  // Multi-period comparisons (daily/weekly/monthly)
+  const multiCmp = useMemo(() => {
+    const compute = (dataset) => {
+      if (!dataset || dataset.length === 0) return { total: null, pickup: null, talkTime: null };
+      const t = dataset.length;
+      const hp = dataset.filter(r => isHumanPickup(r)).length;
+      const hpRate = t > 0 ? Math.round((hp / t) * 100) : 0;
+      const conn = dataset.filter(r => isConnectedCall(r));
+      const tt = conn.reduce((s, r) => s + (r['Duration Seconds'] || 0), 0);
+      return {
+        total: pctChange(total, t),
+        pickup: pctChange(humanPickupRate, hpRate),
+        talkTime: pctChange(totalTalkTimeSec, tt),
+      };
+    };
+    return {
+      daily: compute(comparisonData.daily),
+      weekly: compute(comparisonData.weekly),
+      monthly: compute(comparisonData.monthly),
+    };
+  }, [comparisonData, total, humanPickupRate, totalTalkTimeSec]);
+
+  const cmpTotalMulti = isToday ? { daily: multiCmp.daily.total, weekly: multiCmp.weekly.total, monthly: multiCmp.monthly.total } : null;
+  const cmpPickupMulti = isToday ? { daily: multiCmp.daily.pickup, weekly: multiCmp.weekly.pickup, monthly: multiCmp.monthly.pickup } : null;
+  const cmpTalkTimeMulti = isToday ? { daily: multiCmp.daily.talkTime, weekly: multiCmp.weekly.talkTime, monthly: multiCmp.monthly.talkTime } : null;
 
   // Hot + Warm
   const hotCount = enriched.filter(r => r._tag === 'HOT').length;
@@ -577,14 +621,14 @@ export default function Overview({ records, prevRecords = [], period, periodStar
 
       {/* A) KPI Strip */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-        <KpiCard label="Total Calls" value={total.toLocaleString()} comparison={cmpTotal} subtitle={uniqueSubscribers !== total ? `${uniqueSubscribers} unique subscribers` : null} />
-        <KpiCard label="Human Pickup Rate" value={`${humanPickupRate}%`} color={kpiColor(humanPickupRate, 25, 15)} comparison={cmpPickup} />
+        <KpiCard label="Total Calls" value={total.toLocaleString()} comparison={!isToday ? cmpTotal : null} comparisons={cmpTotalMulti} subtitle={uniqueSubscribers !== total ? `${uniqueSubscribers} unique subscribers` : null} />
+        <KpiCard label="Human Pickup Rate" value={`${humanPickupRate}%`} color={kpiColor(humanPickupRate, 25, 15)} comparison={!isToday ? cmpPickup : null} comparisons={cmpPickupMulti} />
         {isMultiDay ? (
           <KpiCard label="Avg Daily Calls" value={avgDailyCalls} />
         ) : (
           <KpiCard label="Callbacks Pending" value={callbacksPending} badge={urgentCallbacks} />
         )}
-        <KpiCard label="Total Talk Time" value={fmtTalkTime(totalTalkTimeSec)} comparison={cmpTalkTime} />
+        <KpiCard label="Total Talk Time" value={fmtTalkTime(totalTalkTimeSec)} comparison={!isToday ? cmpTalkTime : null} comparisons={cmpTalkTimeMulti} />
         <KpiCard label="Compliance" value={violations > 0 ? `${violations} issue${violations > 1 ? 's' : ''}` : 'Clean'} color={violations > 0 ? 'text-fail' : 'text-pass'} />
         {activationFunnel.welcome > 0 ? (
           <KpiCard

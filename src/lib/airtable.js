@@ -145,9 +145,9 @@ export function getLastScrapedTime(records) {
   if (!records || records.length === 0) return null;
   let latest = null;
   for (const r of records) {
+    // Prefer Processed At (written by scraper), fall back to Airtable createdTime
     let t = r['Processed At'];
-    // If Processed At is date-only (no time info), use Airtable createdTime instead
-    if (t && /^\d{4}-\d{2}-\d{2}$/.test(t) && r._createdTime) {
+    if (!t || /^\d{4}-\d{2}-\d{2}$/.test(t)) {
       t = r._createdTime;
     }
     if (t && (!latest || t > latest)) latest = t;

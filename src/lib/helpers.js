@@ -587,6 +587,23 @@ export function getPreviousPeriodDates(start, end) {
   return { start: fmtDate(prevStart), end: fmtDate(prevEnd) };
 }
 
+/**
+ * Get comparison period dates for multi-period KPI display.
+ * Returns { daily, weekly, monthly } date ranges for comparison.
+ */
+export function getComparisonPeriods() {
+  const now = todayIST();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = addDays(today, -1);
+  const lastWeekSameDay = addDays(today, -7);
+  const lastMonthSameDay = new Date(today.getFullYear(), today.getMonth() - 1, today.getDate());
+  return {
+    daily: { start: fmtDate(yesterday), end: fmtDate(yesterday), label: 'vs yesterday' },
+    weekly: { start: fmtDate(lastWeekSameDay), end: fmtDate(lastWeekSameDay), label: 'vs last week' },
+    monthly: { start: fmtDate(lastMonthSameDay), end: fmtDate(lastMonthSameDay), label: 'vs last month' },
+  };
+}
+
 /** Format a period date range for display: "1 Mar – 15 Mar 2026" */
 export function formatPeriodLabel(start, end) {
   const fmt = (d) => {

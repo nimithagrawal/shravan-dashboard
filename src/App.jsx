@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { fetchTodayWithProgress, fetchRecordsForPeriod, fetchOpenCallbacks, fetchHotLeads, fetchLoanSignals, fetchChurnSignals, fetchCallbacksRequested, fetchTransactionIntents, fetchTodayCoaching, invalidateCache, getLastScrapedTime } from './lib/airtable';
-import { scrapeAgeStatus, getPeriodDates, getPreviousPeriodDates, formatPeriodLabel } from './lib/helpers';
+import { scrapeAgeStatus, getPeriodDates, getPreviousPeriodDates, getComparisonPeriods, formatPeriodLabel } from './lib/helpers';
 import Overview from './components/Overview';
 import VikasQueue from './components/VikasQueue';
 import SamirQueue from './components/SamirQueue';
@@ -42,6 +42,7 @@ export default function App() {
   const [customEnd, setCustomEnd] = useState('');
   const [periodRecords, setPeriodRecords] = useState([]);
   const [prevPeriodRecords, setPrevPeriodRecords] = useState([]);
+  const [comparisonData, setComparisonData] = useState({ daily: [], weekly: [], monthly: [] });
   const [periodLoading, setPeriodLoading] = useState(false);
   const [periodProgress, setPeriodProgress] = useState(0);
 
@@ -91,12 +92,17 @@ export default function App() {
       // Already handled by refresh()
       setPeriodRecords(data.today);
       setPrevPeriodRecords([]);
-      // Fetch yesterday for comparison
-      const prev = getPreviousPeriodDates(start, end);
+      // Fetch daily/weekly/monthly comparisons in parallel
+      const cmp = getComparisonPeriods();
       try {
-        const prevData = await fetchRecordsForPeriod(prev.start, prev.end);
-        setPrevPeriodRecords(prevData);
-      } catch (e) { console.error('Prev period fetch error:', e); }
+        const [dailyData, weeklyData, monthlyData] = await Promise.all([
+          fetchRecordsForPeriod(cmp.daily.start, cmp.daily.end).catch(() => []),
+          fetchRecordsForPeriod(cmp.weekly.start, cmp.weekly.end).catch(() => []),
+          fetchRecordsForPeriod(cmp.monthly.start, cmp.monthly.end).catch(() => []),
+        ]);
+        setPrevPeriodRecords(dailyData); // backwards compat
+        setComparisonData({ daily: dailyData, weekly: weeklyData, monthly: monthlyData });
+      } catch (e) { console.error('Comparison fetch error:', e); }
       return;
     }
     setPeriodLoading(true);
@@ -294,6 +300,7 @@ export default function App() {
                 <Overview
                   records={periodRecords}
                   prevRecords={prevPeriodRecords}
+                  comparisonData={comparisonData}
                   period={selectedPeriod}
                   periodStart={periodStart}
                   periodEnd={periodEnd}
