@@ -3,6 +3,19 @@ const USERS_TABLE = import.meta.env.VITE_AIRTABLE_USERS_TABLE;
 const PAT = import.meta.env.VITE_AIRTABLE_PAT;
 const AIRTABLE_USERS_URL = `https://api.airtable.com/v0/${BASE}/${USERS_TABLE}`;
 
+// Tab name constants (single source of truth)
+export const TAB_NAMES = {
+  COMMAND_CENTER: 'Command Center',
+  WELCOME_CALL:   'Welcome Call',
+  UTILIZATION:    'Utilization',
+  WELCOME_QUEUE:  'Welcome Queue',
+  UTIL_QUEUE:     'Util Queue',
+  AGENT_360:      'Agent 360',
+  PITCH_LAB:      'Pitch Lab',
+  CALL_LOG:       'Call Log',
+  EXECUTIVE:      'Executive',
+};
+
 // Tab permissions per role
 export const TAB_PERMISSIONS = {
   ADMIN:           ['Command Center', 'Welcome Call', 'Utilization', 'Welcome Queue', 'Util Queue', 'Agent 360', 'Pitch Lab', 'Call Log', 'Executive'],

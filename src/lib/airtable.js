@@ -3,6 +3,8 @@ const BASE = import.meta.env.VITE_AIRTABLE_BASE_ID;
 const TABLE = import.meta.env.VITE_AIRTABLE_TABLE;
 const API = `https://api.airtable.com/v0/${BASE}/${TABLE}`;
 const HEADERS = { Authorization: `Bearer ${PAT}` };
+const USERS_TABLE = import.meta.env.VITE_AIRTABLE_USERS_TABLE;
+const USERS_API = `https://api.airtable.com/v0/${BASE}/${USERS_TABLE}`;
 
 // Field ID → stable camelCase alias (resilient to renames)
 // NOTE: Airtable field names are SWAPPED from their contents:
@@ -276,4 +278,35 @@ export async function approveAndCreateVersion(suggestionId, currentVersionId, su
   });
 
   return newVersionId;
+}
+
+// ── Team Config ──
+
+/**
+ * Fetches all active user records from the Users table to build team config.
+ * Returns array of { name, role, agentNameMatch, department } for each agent.
+ */
+export async function fetchTeamConfig() {
+  const cached = getCached('team_config', 60 * 60 * 1000); // 1 hour cache
+  if (cached) return cached;
+  try {
+    const params = new URLSearchParams();
+    params.set('filterByFormula', '{Active} = TRUE()');
+    params.set('maxRecords', '100');
+    const res = await fetch(`${USERS_API}?${params}`, { headers: HEADERS });
+    if (!res.ok) return [];
+    const data = await res.json();
+    const config = (data.records || []).map(r => ({
+      id: r.id,
+      name: r.fields['Name'] || '',
+      role: r.fields['Role'] || 'AGENT',
+      agentNameMatch: r.fields['Agent Name Match'] || '',
+      department: r.fields['Department'] || '',
+    }));
+    setCache('team_config', config);
+    return config;
+  } catch (e) {
+    console.error('fetchTeamConfig error:', e);
+    return [];
+  }
 }

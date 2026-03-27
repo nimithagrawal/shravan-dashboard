@@ -604,6 +604,192 @@ export function getComparisonPeriods() {
   };
 }
 
+// ── Color helpers for callback honor and DNP persistence ──
+
+export function callbackHonorColor(rate) {
+  if (rate == null) return 'text-gray-400';
+  if (rate >= 0.85) return 'text-green-600';
+  if (rate >= 0.65) return 'text-amber-500';
+  return 'text-red-500';
+}
+
+export function dnpPersistenceColor(rate) {
+  if (rate == null) return 'text-gray-400';
+  // Lower DNP persistence is better (more pickups)
+  if (rate <= 0.30) return 'text-green-600';
+  if (rate <= 0.50) return 'text-amber-500';
+  return 'text-red-500';
+}
+
+// ── Attempt bucket counts for charts ──
+
+/**
+ * Returns [{attempt: '1', count: N}, {attempt: '2', count: N}, ...]
+ * from an attemptMap (phone → records[]).
+ */
+export function bucketAttemptCounts(attemptMap) {
+  const counts = {};
+  for (const records of Object.values(attemptMap)) {
+    const n = Math.min(records.length, 5);
+    const key = n >= 5 ? '5+' : String(n);
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return ['1', '2', '3', '4', '5+'].map(k => ({ attempt: k, count: counts[k] || 0 }));
+}
+
+// ── Head metrics computation ──
+
+/**
+ * Computes per-agent metrics from an array of records + coaching data.
+ * Returns array of agent metric objects.
+ */
+export function computeHeadMetrics(records, coachingData = []) {
+  const agentMap = {};
+  for (const r of records) {
+    const name = r['Agent Name'] || 'Unknown';
+    if (!agentMap[name]) agentMap[name] = { name, records: [] };
+    agentMap[name].records.push(r);
+  }
+
+  const agentMetrics = Object.values(agentMap).map(({ name, records: recs }) => {
+    const total = recs.length;
+    const connected = recs.filter(isConnectedCall).length;
+    const completed = recs.filter(r => r['Call Outcome'] === 'Completed').length;
+    const talkTimeSec = recs.reduce((sum, r) => sum + (r['Duration Seconds'] || 0), 0);
+    const coaching = coachingData.find(c => c['Agent Name'] === name);
+
+    return {
+      name,
+      total,
+      connected,
+      completed,
+      talkTimeSec,
+      conversionRate: total > 0 ? (completed / total) * 100 : 0,
+      connectionRate: total > 0 ? (connected / total) * 100 : 0,
+      alertLevel: coaching?.['Alert Level'] || null,
+      qaScore: coaching?.['QA Score'] || null,
+    };
+  });
+
+  return agentMetrics.sort((a, b) => b.total - a.total);
+}
+
+// ── Lead score computation ──
+
+export function computeLeadScore(r) {
+  let score = 0;
+  if (r['Loan Signal'])        score += 3;
+  if (r['Churn Signal'])       score += 2;
+  if (r['Transaction Intent']) score += 2;
+  if (r['Hot Lead'])           score += 2;
+  if (r['Call Outcome'] === 'Callback Requested') score += 1;
+  return Math.min(score, 10);
+}
+
+// ── Utilization channel detection ──
+
+export function detectUtilizationChannel(r) {
+  const sub = (r.callSubCategory || r['Call Category'] || '').toLowerCase();
+  if (sub.includes('pharmacy')) return 'pharmacy';
+  if (sub.includes('diagnostic')) return 'diagnostics';
+  if (sub.includes('healthcare') || sub.includes('health')) return 'healthcare';
+  return 'general';
+}
+
+export function channelTrackColor(channel) {
+  const map = {
+    pharmacy:    'bg-purple-100 text-purple-700',
+    diagnostics: 'bg-teal-100 text-teal-700',
+    healthcare:  'bg-amber-100 text-amber-700',
+    general:     'bg-gray-100 text-gray-700',
+  };
+  return map[channel] || map.general;
+}
+
+// ── Department classification ──
+
+/**
+ * Welcome-Call department: callCategory === 'Welcome-Call'
+ * (callCategory is mapped from the "Call Disposition" Airtable field)
+ */
+export function isWelcomeCallRecord(r) {
+  return r.callCategory === 'Welcome-Call';
+}
+
+/**
+ * Utilization department: any non-Welcome-Call outbound category
+ */
+export function isUtilizationRecord(r) {
+  const cat = r.callCategory || '';
+  return cat === 'Outbound-Service-Followup' || cat === 'Outbound-Agent-Reachout' || cat === 'Inbound-Subscriber';
+}
+
+// ── Attempt map: phone → sorted list of records ──
+
+/**
+ * Builds a map of phone → records[] sorted by date ascending.
+ * Used for DNP persistence and attempt depth calculations.
+ */
+export function buildAttemptMap(records) {
+  const map = {};
+  for (const r of records) {
+    const phone = r['Phone Number'] || r['phone'] || '';
+    if (!phone) continue;
+    if (!map[phone]) map[phone] = [];
+    map[phone].push(r);
+  }
+  // Sort each bucket by scraped/created time ascending
+  for (const phone of Object.keys(map)) {
+    map[phone].sort((a, b) => {
+      const ta = new Date(a['Scraped At'] || a._createdTime || 0).getTime();
+      const tb = new Date(b['Scraped At'] || b._createdTime || 0).getTime();
+      return ta - tb;
+    });
+  }
+  return map;
+}
+
+// ── DNP Persistence Rate ──
+
+/**
+ * Returns { rate: 0-1, dnpPhones: number, total: number }
+ * A phone is "DNP persistent" if ALL attempts ended with Did Not Pick.
+ */
+export function computeDNPPersistenceRate(attemptMap) {
+  const phones = Object.keys(attemptMap);
+  if (!phones.length) return { rate: 0, dnpPhones: 0, total: 0 };
+  const dnpPhones = phones.filter(p => {
+    const attempts = attemptMap[p];
+    return attempts.length >= 2 && attempts.every(r => (r['Call Outcome'] || '') === 'Did Not Pick');
+  });
+  return { rate: dnpPhones.length / phones.length, dnpPhones: dnpPhones.length, total: phones.length };
+}
+
+// ── Callback honor stats ──
+
+/**
+ * Returns { honored: number, total: number, rate: 0-1 }
+ * Honored = scheduled callback was attempted within ±2h of the scheduled time.
+ */
+export function computeCallbackHonorStats(records) {
+  const scheduled = records.filter(r => {
+    const cb = r['Scheduled Callback'] || r['scheduledCallback'] || '';
+    return !!cb;
+  });
+  if (!scheduled.length) return { honored: 0, total: 0, rate: 0 };
+  let honored = 0;
+  for (const r of scheduled) {
+    const cbStr = r['Scheduled Callback'] || r['scheduledCallback'] || '';
+    const scrapedStr = r['Scraped At'] || r._createdTime || '';
+    if (!cbStr || !scrapedStr) continue;
+    const cbTime = new Date(cbStr).getTime();
+    const scrapedTime = new Date(scrapedStr).getTime();
+    const diffHours = Math.abs(cbTime - scrapedTime) / 3600000;
+    if (diffHours <= 2) honored++;
+  }
+  return { honored, total: scheduled.length, rate: honored / scheduled.length };
+}
+
 /** Format a period date range for display: "1 Mar – 15 Mar 2026" */
 export function formatPeriodLabel(start, end) {
   const fmt = (d) => {
