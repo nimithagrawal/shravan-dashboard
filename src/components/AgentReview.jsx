@@ -4,7 +4,8 @@ import IntradayProgress from './IntradayProgress';
 import AgentCallbackBriefing from './AgentCallbackBriefing';
 import PostActivationWasteAlert from './PostActivationWasteAlert';
 import { fetchTodaySnapshots } from '../lib/snapshots';
-import { computeCallbackHonorStats } from '../lib/helpers';
+import { computeCallbackHonorStats, getPeriodDates, isWelcomeCallRecord, isUtilizationRecord } from '../lib/helpers';
+import { fetchRecordsForPeriod } from '../lib/airtable';
 import {
   RadarChart, PolarGrid, PolarAngleAxis, Radar,
   ResponsiveContainer, Tooltip as ReTooltip,
@@ -32,23 +33,23 @@ function isAfter610PM() {
 }
 
 function detectAgentDept(agentName, wcRecords, utilRecords) {
-  const wc = wcRecords.filter(r => (r.fields?.['Agent Name'] || '') === agentName).length;
-  const ut = utilRecords.filter(r => (r.fields?.['Agent Name'] || '') === agentName).length;
+  const wc = wcRecords.filter(r => (r['Agent Name'] || '') === agentName).length;
+  const ut = utilRecords.filter(r => (r['Agent Name'] || '') === agentName).length;
   if (wc === 0 && ut === 0) return null;
   return wc >= ut ? 'welcome' : 'util';
 }
 
 function computeAgentPeriodStats(agentName, allRecords, wcRecords, utilRecords, cbHonorStats) {
-  const agentAll  = allRecords.filter(r => (r.fields?.['Agent Name'] || '') === agentName);
-  const agentWC   = wcRecords.filter(r => (r.fields?.['Agent Name'] || '') === agentName);
-  const agentUtil = utilRecords.filter(r => (r.fields?.['Agent Name'] || '') === agentName);
+  const agentAll  = allRecords.filter(r => (r['Agent Name'] || '') === agentName);
+  const agentWC   = wcRecords.filter(r => (r['Agent Name'] || '') === agentName);
+  const agentUtil = utilRecords.filter(r => (r['Agent Name'] || '') === agentName);
   const total   = agentAll.length;
   const wcTotal = agentWC.length;
   const utilTotal = agentUtil.length;
   const dept = wcTotal >= utilTotal ? 'welcome' : 'util';
 
   const connected = agentAll.filter(r => {
-    const o = (r.fields?.['Call Outcome'] || '').toLowerCase();
+    const o = (r['Call Outcome'] || '').toLowerCase();
     return !o.includes('dnp') && !o.includes('did not') && !o.includes('no answer') && !o.includes('no-answer');
   }).length;
   const connectionRate = total > 0 ? Math.round(connected / total * 100) : 0;
@@ -57,7 +58,7 @@ function computeAgentPeriodStats(agentName, allRecords, wcRecords, utilRecords, 
   // unique phones + attempt depth
   const phoneAttempts = {};
   for (const r of agentAll) {
-    const phone = r.fields?.['Phone Number'] || r.fields?.['Mobile Number'] || '';
+    const phone = r['Phone Number'] || r['Mobile Number'] || '';
     if (phone) phoneAttempts[phone] = (phoneAttempts[phone] || 0) + 1;
   }
   const uniqueSubscribers = Object.keys(phoneAttempts).length;
@@ -67,38 +68,38 @@ function computeAgentPeriodStats(agentName, allRecords, wcRecords, utilRecords, 
     ? Math.round(Object.values(phoneAttempts).filter(v => v >= 6).length / uniqueSubscribers * 100) : 0;
 
   // WC-specific
-  const pitchCompleted  = agentWC.filter(r => (r.fields?.['Pitch Completion Score'] || 0) >= 80).length;
+  const pitchCompleted  = agentWC.filter(r => (r['Pitch Completion Score'] || 0) >= 80).length;
   const pitchCompletionPct = agentWC.length > 0 ? Math.round(pitchCompleted / agentWC.length * 100) : null;
-  const consentClear = agentWC.filter(r => (r.fields?.['Consent Score'] || 0) >= 7).length;
+  const consentClear = agentWC.filter(r => (r['Consent Score'] || 0) >= 7).length;
   const consentRate  = agentWC.length > 0 ? Math.round(consentClear / agentWC.length * 100) : null;
   const activations  = agentWC.filter(r =>
-    (r.fields?.['Activation Status'] || '').toLowerCase().includes('activated')
+    (r['Activation Status'] || '').toLowerCase().includes('activated')
   ).length;
   const activationRate = agentWC.length > 0 ? Math.round(activations / agentWC.length * 100) : null;
 
   // Util-specific
-  const engagedCalls = agentUtil.filter(r => (r.fields?.['Talk Time'] || 0) > 120).length;
+  const engagedCalls = agentUtil.filter(r => (r['Talk Time'] || 0) > 120).length;
   const engagementRate = agentUtil.length > 0 ? Math.round(engagedCalls / agentUtil.length * 100) : null;
   const sentCalls = agentUtil.filter(r =>
-    r.fields?.['Sentiment Score Start'] != null && r.fields?.['Sentiment Score End'] != null
+    r['Sentiment Score Start'] != null && r['Sentiment Score End'] != null
   );
   const avgSentimentDelta = sentCalls.length > 0
     ? (sentCalls.reduce((s, r) =>
-        s + ((r.fields?.['Sentiment Score End'] || 0) - (r.fields?.['Sentiment Score Start'] || 0)), 0
+        s + ((r['Sentiment Score End'] || 0) - (r['Sentiment Score Start'] || 0)), 0
       ) / sentCalls.length).toFixed(2)
     : null;
   const channels = { pharmacy: 0, diagnostics: 0, healthcare: 0 };
   for (const r of agentUtil) {
-    const sum = (r.fields?.['Summary'] || '').toLowerCase();
+    const sum = (r['Summary'] || '').toLowerCase();
     if (sum.includes('pharmacy') || sum.includes('medicine') || sum.includes('medic')) channels.pharmacy++;
     else if (sum.includes('diagnostic') || sum.includes('test') || sum.includes('lab')) channels.diagnostics++;
     else if (sum.includes('hospital') || sum.includes('opd') || sum.includes('surgery') || sum.includes('doctor')) channels.healthcare++;
   }
 
   // QA from records
-  const qaRecs = agentAll.filter(r => r.fields?.['QA Score'] != null);
+  const qaRecs = agentAll.filter(r => r['QA Score'] != null);
   const avgQA  = qaRecs.length > 0
-    ? (qaRecs.reduce((s, r) => s + (r.fields?.['QA Score'] || 0), 0) / qaRecs.length).toFixed(1)
+    ? (qaRecs.reduce((s, r) => s + (r['QA Score'] || 0), 0) / qaRecs.length).toFixed(1)
     : null;
 
   const cbStats = cbHonorStats?.byAgent?.[agentName] || null;
@@ -183,15 +184,15 @@ function QBar({ label, pct, isTopMiss }) {
 
 function AgentRadar({ agentName, wcRecords, utilRecords, periodRecords, cbHonorStats, deptOverride }) {
   const stats = useMemo(() => {
-    const agentAll  = periodRecords.filter(r => (r.fields?.['Agent Name'] || '') === agentName);
-    const agentWC   = wcRecords.filter(r => (r.fields?.['Agent Name'] || '') === agentName);
-    const agentUtil = utilRecords.filter(r => (r.fields?.['Agent Name'] || '') === agentName);
+    const agentAll  = periodRecords.filter(r => (r['Agent Name'] || '') === agentName);
+    const agentWC   = wcRecords.filter(r => (r['Agent Name'] || '') === agentName);
+    const agentUtil = utilRecords.filter(r => (r['Agent Name'] || '') === agentName);
     const total = agentAll.length;
     const dept  = deptOverride || (agentWC.length >= agentUtil.length ? 'welcome' : 'util');
 
     const phoneAttempts = {};
     for (const r of agentAll) {
-      const phone = r.fields?.['Phone Number'] || r.fields?.['Mobile Number'] || '';
+      const phone = r['Phone Number'] || r['Mobile Number'] || '';
       if (phone) phoneAttempts[phone] = (phoneAttempts[phone] || 0) + 1;
     }
     const uniquePhones = Object.keys(phoneAttempts).length;
@@ -199,20 +200,20 @@ function AgentRadar({ agentName, wcRecords, utilRecords, periodRecords, cbHonorS
       ? Math.round(Object.values(phoneAttempts).filter(v => v >= 6).length / uniquePhones * 100) : 0;
 
     const connected = agentAll.filter(r => {
-      const o = (r.fields?.['Call Outcome'] || '').toLowerCase();
+      const o = (r['Call Outcome'] || '').toLowerCase();
       return !o.includes('dnp') && !o.includes('did not') && !o.includes('no answer');
     }).length;
 
-    const pitchCompleted = agentWC.filter(r => (r.fields?.['Pitch Completion Score'] || 0) >= 80).length;
-    const consentClear   = agentWC.filter(r => (r.fields?.['Consent Score'] || 0) >= 7).length;
+    const pitchCompleted = agentWC.filter(r => (r['Pitch Completion Score'] || 0) >= 80).length;
+    const consentClear   = agentWC.filter(r => (r['Consent Score'] || 0) >= 7).length;
     const activations    = agentWC.filter(r =>
-      (r.fields?.['Activation Status'] || '').toLowerCase().includes('activated')
+      (r['Activation Status'] || '').toLowerCase().includes('activated')
     ).length;
-    const engagedCalls   = agentUtil.filter(r => (r.fields?.['Talk Time'] || 0) > 120).length;
+    const engagedCalls   = agentUtil.filter(r => (r['Talk Time'] || 0) > 120).length;
 
     const channels = { pharmacy: 0, diagnostics: 0, healthcare: 0 };
     for (const r of agentUtil) {
-      const s = (r.fields?.['Summary'] || '').toLowerCase();
+      const s = (r['Summary'] || '').toLowerCase();
       if (s.includes('pharmacy') || s.includes('medicine')) channels.pharmacy++;
       else if (s.includes('diagnostic') || s.includes('test') || s.includes('lab')) channels.diagnostics++;
       else if (s.includes('hospital') || s.includes('opd') || s.includes('surgery')) channels.healthcare++;
@@ -249,10 +250,10 @@ function AgentRadar({ agentName, wcRecords, utilRecords, periodRecords, cbHonorS
 }
 
 function DnpCallbackStrip({ agentName, periodRecords, cbHonorStats }) {
-  const agentRecords = periodRecords.filter(r => (r.fields?.['Agent Name'] || '') === agentName);
+  const agentRecords = periodRecords.filter(r => (r['Agent Name'] || '') === agentName);
   const phoneAttempts = {};
   for (const r of agentRecords) {
-    const phone = r.fields?.['Phone Number'] || r.fields?.['Mobile Number'] || '';
+    const phone = r['Phone Number'] || r['Mobile Number'] || '';
     if (phone) phoneAttempts[phone] = (phoneAttempts[phone] || 0) + 1;
   }
   const uniquePhones    = Object.keys(phoneAttempts).length;
@@ -314,8 +315,9 @@ function AgentCard({ record, isAgent, dept, wcRecords, utilRecords, cbHonorStats
   const intradayAlert = f['Intraday Alert'] || '';
   const complianceCount = f['Compliance Count Today'] || 0;
   const topMiss       = f['Top Miss'] || '';
-  const coachingBrief = f['Coaching Brief'] || '';
-  const actionPoints  = f['Action Points'] || '';
+  // Try multiple possible field names for coaching brief (scraper may use any of these)
+  const coachingBrief = f['Coaching Brief'] || f['Brief'] || f['Coaching Notes'] || f['Daily Brief'] || f['Coaching Summary'] || '';
+  const actionPoints  = f['Action Points'] || f['Actions'] || f['Action Items'] || '';
   const patternFlag   = f['Pattern Flag'] || '';
   const worstPattern  = f['Worst Pattern'] || '';
   const bestCallId    = f['Best Call ID'] || '';
@@ -497,13 +499,30 @@ function AgentCard({ record, isAgent, dept, wcRecords, utilRecords, cbHonorStats
         </div>
       )}
 
-      {/* Expanded coaching brief */}
-      {expanded && coachingBrief.length > 0 && (
+      {/* Expanded coaching brief — if coachingBrief is empty, show debug dump of available string fields */}
+      {expanded && (
         <div style={{ marginTop: 12, padding: 12, background: '#F9FAFB',
           borderRadius: 6, borderLeft: '3px solid #1D4ED8' }}>
-          <div style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 10 }}>
-            {coachingBrief}
-          </div>
+          {coachingBrief.length > 0 ? (
+            <div style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 10 }}>
+              {coachingBrief}
+            </div>
+          ) : (
+            <div>
+              <div style={{ fontSize: 11, color: '#9CA3AF', marginBottom: 6 }}>
+                ⚠️ <strong>Field "Coaching Brief" is empty.</strong> Fields available in this coaching record:
+              </div>
+              <div style={{ fontSize: 11, lineHeight: 1.8 }}>
+                {Object.entries(f)
+                  .filter(([k, v]) => v && typeof v === 'string' && v.length > 5 && !['id','Agent Name'].includes(k))
+                  .map(([k, v]) => (
+                    <div key={k}><strong>{k}:</strong> {v.slice(0, 100)}{v.length > 100 ? '…' : ''}</div>
+                  ))
+                }
+              </div>
+            </div>
+          )}
+
           {actionPoints && (
             <div style={{ marginBottom: 8 }}>
               <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>ACTION POINTS</div>
@@ -728,22 +747,41 @@ export default function AgentReview({
   // Internal period selector (independent from the page-level period)
   const [activePeriod, setActivePeriod] = useState('today');
 
-  // Callback honor stats computed from period records
+  // Local fetch for WoW/MoM — fetches its own data when not 'today'
+  const [localRecords, setLocalRecords] = useState([]);
+  const [localLoading, setLocalLoading] = useState(false);
+
+  useEffect(() => {
+    if (activePeriod === 'today') { setLocalRecords([]); return; }
+    setLocalLoading(true);
+    const { start, end } = getPeriodDates(activePeriod === 'month' ? 'mtd' : 'week');
+    fetchRecordsForPeriod(start, end)
+      .then(setLocalRecords)
+      .catch(() => setLocalRecords([]))
+      .finally(() => setLocalLoading(false));
+  }, [activePeriod]);
+
+  // Use local records for WoW/MoM, page-level records for today
+  const effectivePR   = activePeriod === 'today' ? periodRecords : localRecords;
+  const effectiveWC   = useMemo(() => effectivePR.filter(isWelcomeCallRecord),   [effectivePR]);
+  const effectiveUtil = useMemo(() => effectivePR.filter(isUtilizationRecord),   [effectivePR]);
+
+  // Callback honor stats computed from effective records
   const cbHonorStats = useMemo(() =>
-    computeCallbackHonorStats(periodRecords), [periodRecords]);
+    computeCallbackHonorStats(effectivePR), [effectivePR]);
 
   // Dept map per agent name
   const agentDeptMap = useMemo(() => {
     const names = new Set([
-      ...periodRecords.map(r => r.fields?.['Agent Name'] || ''),
+      ...effectivePR.map(r => r['Agent Name'] || ''),
       ...(data || []).map(r => r['Agent Name'] || ''),
     ]);
     const map = {};
     for (const name of names) {
-      if (name) map[name] = detectAgentDept(name, wcRecords, utilRecords);
+      if (name) map[name] = detectAgentDept(name, effectiveWC, effectiveUtil);
     }
     return map;
-  }, [periodRecords, data, wcRecords, utilRecords]);
+  }, [effectivePR, data, effectiveWC, effectiveUtil]);
 
   // TODAY — snapshot-based cards
   const visibleData = useMemo(() => {
@@ -760,12 +798,12 @@ export default function AgentReview({
   // WoW / MoM — record-derived cards
   const agentPeriodStats = useMemo(() => {
     if (activePeriod === 'today') return [];
-    const names = new Set(periodRecords.map(r => r.fields?.['Agent Name'] || '').filter(Boolean));
+    const names = new Set(effectivePR.map(r => r['Agent Name'] || '').filter(Boolean));
     return [...names]
-      .map(name => computeAgentPeriodStats(name, periodRecords, wcRecords, utilRecords, cbHonorStats))
+      .map(name => computeAgentPeriodStats(name, effectivePR, effectiveWC, effectiveUtil, cbHonorStats))
       .filter(s => s.total > 0)
       .sort((a, b) => b.total - a.total);
-  }, [activePeriod, periodRecords, wcRecords, utilRecords, cbHonorStats]);
+  }, [activePeriod, effectivePR, effectiveWC, effectiveUtil, cbHonorStats]);
 
   const visiblePeriodStats = useMemo(() =>
     isAgent && agentName
@@ -960,12 +998,15 @@ export default function AgentReview({
           <h2 style={{ fontWeight: 700, fontSize: 18, marginBottom: 4 }}>
             {isAgent ? 'My Performance' : 'Agent Performance'} — {PERIOD_LABELS[activePeriod]}
           </h2>
-          {periodStart && (
-            <p style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 16 }}>
-              {periodStart}{periodEnd ? ` – ${periodEnd}` : ''}&nbsp;·&nbsp;
-              {periodRecords.length} calls across {visiblePeriodStats.length} agent{visiblePeriodStats.length !== 1 ? 's' : ''}
-            </p>
-          )}
+          {(() => {
+            const { start, end } = getPeriodDates(activePeriod === 'month' ? 'mtd' : 'week');
+            return (
+              <p style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 16 }}>
+                {start} – {end}&nbsp;·&nbsp;
+                {localLoading ? 'Loading…' : `${effectivePR.length} calls across ${visiblePeriodStats.length} agent${visiblePeriodStats.length !== 1 ? 's' : ''}`}
+              </p>
+            );
+          })()}
 
           {/* Period team summary strip */}
           {!isAgent && visiblePeriodStats.length > 0 && (
@@ -986,7 +1027,11 @@ export default function AgentReview({
             </div>
           )}
 
-          {visiblePeriodStats.length === 0 ? (
+          {localLoading ? (
+            <div style={{ padding: 40, textAlign: 'center', color: '#9CA3AF' }}>
+              Loading call records…
+            </div>
+          ) : visiblePeriodStats.length === 0 ? (
             <div style={{ padding: 40, textAlign: 'center', color: '#9CA3AF' }}>
               No calls found for this period.
             </div>

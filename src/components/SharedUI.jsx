@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
 
 /**
  * ExpandableSummary — replaces truncate(r['Summary']) in table cells.
@@ -453,6 +454,122 @@ export function TranscriptViewer({ transcript, agentName }) {
       {conversationTurns.length === 0 && operatorTurns.length > 0 && (
         <div className="text-gray-400 text-xs italic">No conversation detected — only IVR/network audio</div>
       )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════
+// EmotionalJourneyChart — Recharts line chart of sentiment over call duration
+// Reads JSON from Airtable "Emotional Journey" field:
+//   [{ window: "0:00-0:30", sentiment: 3.2, label: "Neutral opening" }, ...]
+// ══════════════════════════════════════════════════════════════
+
+const SENTIMENT_COLORS = {
+  positive: '#22c55e',
+  neutral: '#6b7280',
+  negative: '#ef4444',
+};
+
+function sentimentColor(val) {
+  if (val >= 3.5) return SENTIMENT_COLORS.positive;
+  if (val >= 2.5) return SENTIMENT_COLORS.neutral;
+  return SENTIMENT_COLORS.negative;
+}
+
+export function EmotionalJourneyChart({ journeyJson }) {
+  const data = useMemo(() => {
+    if (!journeyJson) return null;
+    try {
+      const parsed = typeof journeyJson === 'string' ? JSON.parse(journeyJson) : journeyJson;
+      if (!Array.isArray(parsed) || parsed.length === 0) return null;
+      return parsed.map((w, i) => ({
+        idx: i,
+        time: w.window || `${i * 30}s`,
+        sentiment: Number(w.sentiment) || 3,
+        label: w.label || w.key_moment || '',
+      }));
+    } catch {
+      return null;
+    }
+  }, [journeyJson]);
+
+  if (!data) return null;
+
+  const avg = data.reduce((s, d) => s + d.sentiment, 0) / data.length;
+  const min = Math.min(...data.map(d => d.sentiment));
+  const max = Math.max(...data.map(d => d.sentiment));
+  const delta = data.length >= 2 ? data[data.length - 1].sentiment - data[0].sentiment : 0;
+
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-3">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-xs font-semibold text-gray-600 uppercase tracking-wider">
+          Emotional Journey
+        </span>
+        <div className="flex gap-3 text-[10px] text-gray-500">
+          <span>Avg: <b className="text-gray-700">{avg.toFixed(1)}</b></span>
+          <span>Min: <b style={{ color: sentimentColor(min) }}>{min.toFixed(1)}</b></span>
+          <span>Max: <b style={{ color: sentimentColor(max) }}>{max.toFixed(1)}</b></span>
+          <span>
+            Delta:{' '}
+            <b style={{ color: delta >= 0 ? '#22c55e' : '#ef4444' }}>
+              {delta >= 0 ? '+' : ''}{delta.toFixed(1)}
+            </b>
+          </span>
+        </div>
+      </div>
+      <ResponsiveContainer width="100%" height={140}>
+        <LineChart data={data} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
+          <XAxis
+            dataKey="time"
+            tick={{ fontSize: 9, fill: '#9ca3af' }}
+            axisLine={{ stroke: '#e5e7eb' }}
+            tickLine={false}
+          />
+          <YAxis
+            domain={[1, 5]}
+            ticks={[1, 2, 3, 4, 5]}
+            tick={{ fontSize: 9, fill: '#9ca3af' }}
+            axisLine={false}
+            tickLine={false}
+          />
+          <ReferenceLine y={3} stroke="#d1d5db" strokeDasharray="3 3" />
+          <Tooltip
+            content={({ active, payload }) => {
+              if (!active || !payload?.length) return null;
+              const d = payload[0].payload;
+              return (
+                <div className="bg-gray-800 text-white text-[10px] px-2 py-1 rounded shadow-lg max-w-[200px]">
+                  <div className="font-semibold">{d.time}</div>
+                  <div>Sentiment: <b>{d.sentiment.toFixed(1)}</b>/5</div>
+                  {d.label && <div className="text-gray-300 mt-0.5">{d.label}</div>}
+                </div>
+              );
+            }}
+          />
+          <Line
+            type="monotone"
+            dataKey="sentiment"
+            stroke="#6366f1"
+            strokeWidth={2}
+            dot={(props) => {
+              const { cx, cy, payload } = props;
+              const hasLabel = payload.label && payload.label.length > 0;
+              return (
+                <circle
+                  cx={cx}
+                  cy={cy}
+                  r={hasLabel ? 4 : 2.5}
+                  fill={sentimentColor(payload.sentiment)}
+                  stroke={hasLabel ? '#6366f1' : 'none'}
+                  strokeWidth={hasLabel ? 1.5 : 0}
+                />
+              );
+            }}
+            activeDot={{ r: 5, fill: '#6366f1' }}
+          />
+        </LineChart>
+      </ResponsiveContainer>
     </div>
   );
 }

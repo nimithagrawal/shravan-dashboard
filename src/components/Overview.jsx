@@ -10,7 +10,7 @@ import {
   subscriberType, subscriberTypeColor, pitchQualityIssue,
   extractScheduledCallback, formatCallbackDue, callbackDueColor,
 } from '../lib/helpers';
-import { ExpandableSummary, TranscriptViewer } from './SharedUI';
+import { ExpandableSummary, TranscriptViewer, EmotionalJourneyChart } from './SharedUI';
 import PhoneNumber from './PhoneNumber';
 
 function ChangeChip({ value, label }) {
@@ -176,6 +176,130 @@ export default function Overview({ records, prevRecords = [], comparisonData = {
   const agentSubCount = enriched.filter(r => r._subType === 'Agent/CSP').length;
   const disputedSubCount = enriched.filter(r => r._subType === 'Disputed').length;
   const customerSubCount = total - agentSubCount - disputedSubCount;
+
+  // ── New metrics from upgraded pipeline ──
+  const fullPitchCalls = enriched.filter(r => r['Call Framework'] === 'Full Pitch');
+  const tier2Calls = enriched.filter(r => String(r['Gemini Tier']) === '2');
+
+  // Agent Talk % average (Tier 2 only)
+  const talkPcts = tier2Calls.map(r => r['Agent Talk %']).filter(v => v != null);
+  const avgTalkPct = talkPcts.length > 0 ? Math.round(talkPcts.reduce((a, b) => a + b, 0) / talkPcts.length) : null;
+
+  // Monologue rate
+  const monologueCounts = tier2Calls.map(r => r['Monologue Segments']).filter(v => v != null);
+  const avgMonologues = monologueCounts.length > 0 ? (monologueCounts.reduce((a, b) => a + b, 0) / monologueCounts.length).toFixed(1) : null;
+
+  // Weighted QA score average
+  const qaScores = enriched.map(r => r['QA Score']).filter(v => v != null && v > 0);
+  const avgQaScore = qaScores.length > 0 ? Math.round(qaScores.reduce((a, b) => a + b, 0) / qaScores.length) : null;
+  const qaPassCount = enriched.filter(r => r['QA Pass'] === true).length;
+  const qaPassRate = qaScores.length > 0 ? Math.round((qaPassCount / qaScores.length) * 100) : null;
+
+  // Drop funnel
+  const dropStages = tier2Calls.map(r => r['Drop Stage']).filter(Boolean);
+  const completedCalls = dropStages.filter(s => s === 'Complete').length;
+  const completionRate = dropStages.length > 0 ? Math.round((completedCalls / dropStages.length) * 100) : null;
+
+  // Compliance violation rate
+  const violationRate = fullPitchCalls.length > 0 ? Math.round((violations / fullPitchCalls.length) * 100) : 0;
+
+  // Sentiment delta average
+  const sentimentDeltas = tier2Calls.map(r => r['Sentiment Delta']).filter(v => v != null);
+  const avgSentimentDelta = sentimentDeltas.length > 0 ? (sentimentDeltas.reduce((a, b) => a + b, 0) / sentimentDeltas.length).toFixed(1) : null;
+
+  // ── Acoustic Intelligence (agent-level aggregation) ──
+  const acousticByAgent = useMemo(() => {
+    const agents = {};
+    enriched.forEach(r => {
+      const name = r['Agent Name'];
+      if (!name) return;
+      if (!agents[name]) agents[name] = { speechRates: [], deadAirs: [], overtalks: [], pitches: [], calls: 0 };
+      const a = agents[name];
+      a.calls++;
+      if (r['Speech Rate WPM'] > 0) a.speechRates.push(r['Speech Rate WPM']);
+      if (r['Dead Air %'] != null) a.deadAirs.push(r['Dead Air %']);
+      if (r['Overtalk Estimate'] != null) a.overtalks.push(r['Overtalk Estimate']);
+      if (r['Pitch Mean Hz'] > 0) a.pitches.push(r['Pitch Mean Hz']);
+    });
+    const avg = arr => arr.length > 0 ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length * 10) / 10 : null;
+    return Object.entries(agents).map(([name, d]) => ({
+      name,
+      calls: d.calls,
+      speechRate: avg(d.speechRates),
+      deadAir: avg(d.deadAirs),
+      overtalk: avg(d.overtalks),
+      pitch: avg(d.pitches),
+      // Acoustic health score: penalize high dead air + high overtalk + too fast/slow speech
+      score: (() => {
+        const sr = avg(d.speechRates);
+        const da = avg(d.deadAirs);
+        const ot = avg(d.overtalks);
+        if (sr == null && da == null) return null;
+        let s = 100;
+        if (da != null) s -= Math.min(da * 2, 30);         // Dead air penalty
+        if (ot != null) s -= Math.min(ot * 0.5, 20);       // Overtalk penalty
+        if (sr != null) s -= Math.min(Math.abs(sr - 140) * 0.3, 20); // Ideal ~140 WPM
+        return Math.max(0, Math.round(s));
+      })(),
+    })).filter(a => a.speechRate != null || a.deadAir != null).sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  }, [enriched]);
+
+  // ── Emotional Journey aggregation (team-level) ──
+  const emotionalJourneyStats = useMemo(() => {
+    const arcCounts = {};
+    const sentimentArcs = enriched.map(r => r['Sentiment Arc Type']).filter(v => v && v !== 'unknown');
+    sentimentArcs.forEach(arc => { arcCounts[arc] = (arcCounts[arc] || 0) + 1; });
+    const total = sentimentArcs.length;
+    return {
+      total,
+      arcs: Object.entries(arcCounts)
+        .sort((a, b) => b[1] - a[1])
+        .map(([arc, count]) => ({ arc, count, pct: Math.round((count / total) * 100) })),
+      risingPct: total > 0 ? Math.round(((arcCounts['Rising'] || 0) / total) * 100) : 0,
+      decliningPct: total > 0 ? Math.round(((arcCounts['Declining'] || 0) / total) * 100) : 0,
+    };
+  }, [enriched]);
+
+  // ── Intelligence Signals (new fields) ──
+  const intelStats = useMemo(() => {
+    const competitors = {};
+    const lifeEvents = {};
+    const arcCounts = {};
+    let highNeed = 0, medNeed = 0;
+    let lowDigital = 0, highDigital = 0;
+    let coachingMoments = [];
+    enriched.forEach(r => {
+      const comp = r['Competitor Mentioned'];
+      if (comp && comp.trim()) competitors[comp] = (competitors[comp] || 0) + 1;
+      const le = r['Life Event Detected'];
+      if (le && le !== 'none') lifeEvents[le] = (lifeEvents[le] || 0) + 1;
+      const needScore = r['Immediate Need Score'];
+      if (needScore >= 4) highNeed++;
+      else if (needScore >= 2) medNeed++;
+      const dr = r['Digital Readiness'];
+      if (dr === 'low') lowDigital++;
+      else if (dr === 'high') highDigital++;
+      const cm = r['Coaching Moment'];
+      if (cm && cm.trim()) coachingMoments.push({ agent: r['Agent Name'], moment: cm, call: r['Call ID'] });
+    });
+    return {
+      competitors: Object.entries(competitors).sort((a, b) => b[1] - a[1]).slice(0, 5),
+      lifeEvents: Object.entries(lifeEvents).sort((a, b) => b[1] - a[1]).slice(0, 5),
+      highNeed, medNeed,
+      lowDigital, highDigital,
+      coachingMoments: coachingMoments.slice(0, 10),
+    };
+  }, [enriched]);
+
+  // North Star RAG thresholds (per Analysis Framework Section 11)
+  const ragColor = (val, green, amber) => {
+    if (val == null) return 'text-gray-400';
+    return val >= green ? 'text-emerald-600' : val >= amber ? 'text-amber-500' : 'text-red-500';
+  };
+  const ragDot = (val, green, amber) => {
+    if (val == null) return 'bg-gray-300';
+    return val >= green ? 'bg-emerald-500' : val >= amber ? 'bg-amber-400' : 'bg-red-500';
+  };
 
   // ── Summary Stats Row ──
   const summaryLine = `${total.toLocaleString()} calls | ${connectedCalls.length} connected (${total > 0 ? Math.round((connectedCalls.length / total) * 100) : 0}%) | ${fmtTalkTime(totalTalkTimeSec)} talk time | ${hotCount + warmCount} leads | ${callbacksPending} pending retry`;
@@ -641,6 +765,46 @@ export default function Overview({ records, prevRecords = [], comparisonData = {
           <KpiCard label="Active Signals" value={activeSignals} color={activeSignals > 0 ? 'text-info' : 'text-gray-400'} />
         )}
       </div>
+
+      {/* North Star Metrics — 6 key indicators with RAG thresholds */}
+      {(avgQaScore != null || qaPassRate != null || violationRate != null) && (
+        <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-100">
+          <h3 className="text-sm font-semibold text-gray-700 mb-3">North Star Metrics</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+            <div className="text-center">
+              <div className={`inline-block w-2 h-2 rounded-full mb-1 ${ragDot(avgQaScore, 70, 55)}`} />
+              <p className={`text-xl font-bold ${ragColor(avgQaScore, 70, 55)}`}>{avgQaScore ?? '-'}</p>
+              <p className="text-[10px] text-gray-500">QA Score Avg</p>
+            </div>
+            <div className="text-center">
+              <div className={`inline-block w-2 h-2 rounded-full mb-1 ${ragDot(qaPassRate, 75, 60)}`} />
+              <p className={`text-xl font-bold ${ragColor(qaPassRate, 75, 60)}`}>{qaPassRate != null ? `${qaPassRate}%` : '-'}</p>
+              <p className="text-[10px] text-gray-500">QA Pass Rate</p>
+            </div>
+            <div className="text-center">
+              <div className={`inline-block w-2 h-2 rounded-full mb-1 ${ragDot(completionRate, 60, 40)}`} />
+              <p className={`text-xl font-bold ${ragColor(completionRate, 60, 40)}`}>{completionRate != null ? `${completionRate}%` : '-'}</p>
+              <p className="text-[10px] text-gray-500">Pitch Completion</p>
+            </div>
+            <div className="text-center">
+              <div className={`inline-block w-2 h-2 rounded-full mb-1 ${ragDot(avgTalkPct != null ? (100 - Math.abs(avgTalkPct - 55)) : null, 80, 60)}`} />
+              <p className={`text-xl font-bold ${ragColor(avgTalkPct != null ? (100 - Math.abs(avgTalkPct - 55)) : null, 80, 60)}`}>{avgTalkPct != null ? `${avgTalkPct}%` : '-'}</p>
+              <p className="text-[10px] text-gray-500">Agent Talk Ratio</p>
+              <p className="text-[8px] text-gray-400">ideal: 55%</p>
+            </div>
+            <div className="text-center">
+              <div className={`inline-block w-2 h-2 rounded-full mb-1 ${ragDot(100 - violationRate, 95, 85)}`} />
+              <p className={`text-xl font-bold ${ragColor(100 - violationRate, 95, 85)}`}>{violationRate}%</p>
+              <p className="text-[10px] text-gray-500">Violation Rate</p>
+            </div>
+            <div className="text-center">
+              <div className={`inline-block w-2 h-2 rounded-full mb-1 ${ragDot(avgSentimentDelta != null ? parseFloat(avgSentimentDelta) + 2 : null, 2, 1)}`} />
+              <p className={`text-xl font-bold ${ragColor(avgSentimentDelta != null ? parseFloat(avgSentimentDelta) + 2 : null, 2, 1)}`}>{avgSentimentDelta != null ? (avgSentimentDelta > 0 ? `+${avgSentimentDelta}` : avgSentimentDelta) : '-'}</p>
+              <p className="text-[10px] text-gray-500">Sentiment Delta</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Subscriber Type + Pitch Quality Strip */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
@@ -1146,6 +1310,183 @@ export default function Overview({ records, prevRecords = [], comparisonData = {
         </div>
       )}
 
+      {/* Acoustic Intelligence — Agent-Level */}
+      {acousticByAgent.length > 0 && (
+        <div className="bg-card rounded-xl p-4 shadow-sm border border-gray-100">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-gray-700">Acoustic Intelligence</h2>
+            <span className="text-xs text-gray-400">From audio analysis · ideal: ~140 WPM, dead air &lt;10%, overtalk &lt;15%</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-gray-100 text-left text-gray-500">
+                  <th className="px-3 py-1.5">Agent</th>
+                  <th className="px-3 py-1.5">Health</th>
+                  <th className="px-3 py-1.5">Speech Rate</th>
+                  <th className="px-3 py-1.5">Dead Air</th>
+                  <th className="px-3 py-1.5">Overtalk</th>
+                  <th className="px-3 py-1.5">Pitch Hz</th>
+                  <th className="px-3 py-1.5">Calls w/ Audio</th>
+                </tr>
+              </thead>
+              <tbody>
+                {acousticByAgent.map(a => (
+                  <tr key={a.name} className="border-b border-gray-50 hover:bg-gray-50">
+                    <td className="px-3 py-1.5 font-medium">{a.name}</td>
+                    <td className="px-3 py-1.5">
+                      {a.score != null ? (
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-16 bg-gray-100 rounded-full h-2">
+                            <div className={`h-2 rounded-full ${a.score >= 75 ? 'bg-emerald-500' : a.score >= 55 ? 'bg-amber-400' : 'bg-red-500'}`}
+                              style={{ width: `${a.score}%` }} />
+                          </div>
+                          <span className={`font-mono font-bold ${a.score >= 75 ? 'text-emerald-600' : a.score >= 55 ? 'text-amber-500' : 'text-red-500'}`}>
+                            {a.score}
+                          </span>
+                        </div>
+                      ) : <span className="text-gray-300">--</span>}
+                    </td>
+                    <td className="px-3 py-1.5 font-mono">
+                      {a.speechRate != null ? (
+                        <span className={a.speechRate > 180 ? 'text-red-500' : a.speechRate < 100 ? 'text-amber-500' : 'text-gray-700'}>
+                          {a.speechRate} wpm
+                        </span>
+                      ) : '--'}
+                    </td>
+                    <td className="px-3 py-1.5 font-mono">
+                      {a.deadAir != null ? (
+                        <span className={a.deadAir > 20 ? 'text-red-500' : a.deadAir > 10 ? 'text-amber-500' : 'text-emerald-600'}>
+                          {a.deadAir}%
+                        </span>
+                      ) : '--'}
+                    </td>
+                    <td className="px-3 py-1.5 font-mono">
+                      {a.overtalk != null ? (
+                        <span className={a.overtalk > 25 ? 'text-red-500' : a.overtalk > 15 ? 'text-amber-500' : 'text-emerald-600'}>
+                          {a.overtalk}
+                        </span>
+                      ) : '--'}
+                    </td>
+                    <td className="px-3 py-1.5 font-mono text-gray-500">{a.pitch != null ? `${a.pitch}` : '--'}</td>
+                    <td className="px-3 py-1.5 font-mono text-gray-400">{a.calls}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Intelligence Signals */}
+      {(intelStats.competitors.length > 0 || intelStats.lifeEvents.length > 0 || intelStats.highNeed > 0 || intelStats.coachingMoments.length > 0) && (
+        <div className="bg-card rounded-xl p-4 shadow-sm border border-gray-100">
+          <h2 className="text-sm font-semibold text-gray-700 mb-3">Intelligence Signals</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Immediate Need */}
+            <div>
+              <p className="text-xs font-semibold text-gray-500 mb-2">Immediate Need</p>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-red-600 font-medium">High (4-5)</span>
+                  <span className="font-mono font-bold text-red-600">{intelStats.highNeed}</span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-amber-600">Medium (2-3)</span>
+                  <span className="font-mono text-amber-600">{intelStats.medNeed}</span>
+                </div>
+                {intelStats.lowDigital > 0 && (
+                  <div className="mt-2 pt-2 border-t border-gray-100">
+                    <p className="text-[10px] text-gray-400 mb-1">Digital Readiness</p>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-red-500">Low digital</span>
+                      <span className="font-mono">{intelStats.lowDigital}</span>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-emerald-600">High digital</span>
+                      <span className="font-mono">{intelStats.highDigital}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Competitors Mentioned */}
+            {intelStats.competitors.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-gray-500 mb-2">Competitors Mentioned</p>
+                <div className="space-y-1">
+                  {intelStats.competitors.map(([name, count]) => (
+                    <div key={name} className="flex items-center gap-2 text-xs">
+                      <div className="flex-1 bg-gray-100 rounded-full h-2">
+                        <div className="bg-purple-400 h-2 rounded-full"
+                          style={{ width: `${(count / intelStats.competitors[0][1]) * 100}%` }} />
+                      </div>
+                      <span className="text-gray-600 w-20 truncate">{name}</span>
+                      <span className="font-mono font-bold text-purple-600">{count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Life Events */}
+            {intelStats.lifeEvents.length > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-gray-500 mb-2">Life Events Detected</p>
+                <div className="space-y-1">
+                  {intelStats.lifeEvents.map(([event, count]) => (
+                    <div key={event} className="flex items-center justify-between text-xs">
+                      <span className="text-gray-600 capitalize">{event.replace(/_/g, ' ')}</span>
+                      <span className="font-mono font-bold text-blue-600">{count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Sentiment Arc Distribution */}
+            {emotionalJourneyStats.total > 0 && (
+              <div>
+                <p className="text-xs font-semibold text-gray-500 mb-2">Sentiment Arcs</p>
+                <div className="space-y-1">
+                  {emotionalJourneyStats.arcs.map(({ arc, count, pct }) => (
+                    <div key={arc} className="flex items-center gap-2 text-xs">
+                      <span className={`w-16 ${arc === 'Rising' ? 'text-emerald-600' : arc === 'Declining' ? 'text-red-500' : 'text-gray-600'}`}>
+                        {arc}
+                      </span>
+                      <div className="flex-1 bg-gray-100 rounded-full h-2">
+                        <div className={`h-2 rounded-full ${arc === 'Rising' ? 'bg-emerald-400' : arc === 'Declining' ? 'bg-red-400' : arc === 'U-Shape' ? 'bg-blue-400' : 'bg-gray-400'}`}
+                          style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="font-mono w-8 text-right text-gray-500">{pct}%</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[10px] text-gray-400 mt-1">
+                  {emotionalJourneyStats.risingPct}% improving · {emotionalJourneyStats.decliningPct}% declining
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Coaching Moments Feed */}
+          {intelStats.coachingMoments.length > 0 && (
+            <div className="mt-4 pt-3 border-t border-gray-100">
+              <p className="text-xs font-semibold text-gray-500 mb-2">AI Coaching Moments</p>
+              <div className="space-y-1.5">
+                {intelStats.coachingMoments.slice(0, 5).map((cm, i) => (
+                  <div key={i} className="flex items-start gap-2 text-xs">
+                    <span className="text-gray-400 w-24 shrink-0">{cm.agent}</span>
+                    <span className="text-gray-600 italic">"{cm.moment}"</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* D) Conversion + Sentiment Row */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-card rounded-xl p-4 shadow-sm border border-gray-100">
@@ -1368,6 +1709,36 @@ export default function Overview({ records, prevRecords = [], comparisonData = {
                               ))}
                             </div>
                           </div>
+                          {r['QA Score'] != null && (
+                            <div className="flex flex-wrap gap-4 items-center">
+                              <span>QA Score: <b className={r['QA Score'] >= 70 ? 'text-pass' : r['QA Score'] >= 50 ? 'text-amber-600' : 'text-fail'}>{r['QA Score']}/100</b></span>
+                              {r['QA Pass'] != null && (
+                                <Chip text={r['QA Pass'] ? 'PASS' : 'FAIL'} className={r['QA Pass'] ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'} />
+                              )}
+                              {r['Coaching Priority'] && <Chip text={`Priority: ${r['Coaching Priority']}`} className={r['Coaching Priority'] === 'High' ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'} />}
+                            </div>
+                          )}
+                          {(r['Agent Talk %'] != null || r['Sentiment Delta'] != null) && (
+                            <div className="flex flex-wrap gap-4 text-gray-600">
+                              {r['Agent Talk %'] != null && <span>Agent Talk: <b>{r['Agent Talk %']}%</b></span>}
+                              {r['Subscriber Talk %'] != null && <span>Sub Talk: <b>{r['Subscriber Talk %']}%</b></span>}
+                              {r['Monologue Segments'] != null && <span>Monologues: <b>{r['Monologue Segments']}</b></span>}
+                              {r['Turn Count'] != null && <span>Turns: <b>{r['Turn Count']}</b></span>}
+                              {r['Sentiment Delta'] != null && (
+                                <span>Sentiment \u0394: <b className={r['Sentiment Delta'] >= 0 ? 'text-pass' : 'text-fail'}>{r['Sentiment Delta'] >= 0 ? '+' : ''}{r['Sentiment Delta']}</b></span>
+                              )}
+                              {r['Drop Stage'] && <span>Drop: <b>{r['Drop Stage']}</b></span>}
+                            </div>
+                          )}
+                          {(r['Speech Rate WPM'] != null || r['Dead Air %'] != null) && (
+                            <div className="flex flex-wrap gap-4 text-gray-600">
+                              <span className="font-semibold text-gray-500">Acoustic:</span>
+                              {r['Speech Rate WPM'] != null && <span>Speech: <b>{r['Speech Rate WPM']} wpm</b></span>}
+                              {r['Pitch Mean Hz'] != null && <span>Pitch: <b>{r['Pitch Mean Hz']} Hz</b></span>}
+                              {r['Dead Air %'] != null && <span>Dead Air: <b className={r['Dead Air %'] > 15 ? 'text-fail' : 'text-pass'}>{r['Dead Air %']}%</b></span>}
+                              {r['Overtalk %'] != null && <span>Overtalk: <b className={r['Overtalk %'] > 10 ? 'text-fail' : 'text-pass'}>{r['Overtalk %']}%</b></span>}
+                            </div>
+                          )}
                           {r['Compliance Detail'] && (
                             <p className="text-fail font-semibold">Compliance: {r['Compliance Detail']}</p>
                           )}
@@ -1381,6 +1752,9 @@ export default function Overview({ records, prevRecords = [], comparisonData = {
                             <p className="font-semibold text-gray-600 mb-1">Transcript</p>
                             <TranscriptViewer transcript={r['Transcript']} agentName={r['Agent Name']} />
                           </div>
+                          {r['Emotional Journey'] && (
+                            <EmotionalJourneyChart journeyJson={r['Emotional Journey']} />
+                          )}
                           {r['Recording URL'] && (
                             <div>
                               <audio controls src={r['Recording URL']} className="h-8 w-full max-w-md" />

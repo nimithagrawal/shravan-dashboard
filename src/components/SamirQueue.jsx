@@ -1,6 +1,35 @@
 import { useState, useMemo, useEffect, Fragment } from 'react';
 import { patchRecord } from '../lib/airtable';
 import { sentimentScoreColor, fmtDuration, computeGist, gistColor, subscriberType, subscriberTypeColor, callLabelColor } from '../lib/helpers';
+
+function detectChannel(r) {
+  const s = (r['Summary'] || '').toLowerCase();
+  if (s.includes('pharmacy') || s.includes('medicine') || s.includes('medic')) return 'pharmacy';
+  if (s.includes('diagnostic') || s.includes('test') || s.includes('lab')) return 'diagnostics';
+  if (s.includes('hospital') || s.includes('opd') || s.includes('surgery') || s.includes('doctor')) return 'healthcare';
+  return null;
+}
+
+function ChannelChip({ record }) {
+  const ch = detectChannel(record);
+  if (!ch) return <span className="text-gray-300 text-xs">—</span>;
+  const cfg = {
+    pharmacy:    { emoji: '💊', label: 'Pharma',  bg: 'bg-blue-100',  color: 'text-blue-700' },
+    diagnostics: { emoji: '🔬', label: 'Diag',    bg: 'bg-purple-100', color: 'text-purple-700' },
+    healthcare:  { emoji: '🏥', label: 'Health',  bg: 'bg-teal-100',  color: 'text-teal-700' },
+  }[ch];
+  return (
+    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold ${cfg.bg} ${cfg.color}`}>
+      {cfg.emoji} {cfg.label}
+    </span>
+  );
+}
+
+function AttemptBadge({ count }) {
+  if (!count || count <= 1) return <span className="text-xs text-gray-400">1st</span>;
+  const color = count >= 6 ? 'bg-green-100 text-green-700' : count >= 3 ? 'bg-yellow-100 text-amber' : 'bg-gray-100 text-gray-600';
+  return <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold ${color}`}>#{count}</span>;
+}
 import { ExpandableSummary, TranscriptViewer } from './SharedUI';
 import PhoneNumber from './PhoneNumber';
 import { useAuth } from '../context/AuthContext';
@@ -143,7 +172,7 @@ function SectionHeader({ title, emoji, count, badgeColor = 'bg-pass' }) {
   );
 }
 
-export default function SamirQueue({ today = [], hotLeads, loans, churn, callbacksRequested = [], transactionIntents = [], onRemove, onRefresh }) {
+export default function SamirQueue({ today = [], hotLeads, loans, churn, callbacksRequested = [], transactionIntents = [], onRemove, onRefresh, attemptMap = {} }) {
   const { canDo } = useAuth();
   const canOutreach = canDo('canInitiateOutreach');
   const [doneIds, setDoneIds] = useState(new Set());
@@ -327,12 +356,63 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
     } catch (e) { alert('Failed: ' + e.message); }
   };
 
+  // ── Hero KPIs ──
+  const totalOpen = sortedTransactions.length + complaints.length + sortedLeads.length + sortedLoans.length + sortedChurn.length + sortedCallbacksReq.length;
+  const slaBreaches = overdueImmediate.length;
+  const resolvedCount = resolvedItems.length;
+  const resolutionRate = (resolvedCount + totalOpen) > 0 ? Math.round((resolvedCount / (resolvedCount + totalOpen)) * 100) : 0;
+
+  // Verdict
+  const samirVerdict = slaBreaches > 0 || complaints.length > 3 ? 'red'
+    : totalOpen > 10 || complaints.length > 0 ? 'amber' : 'green';
+  const samirVerdictLabel = samirVerdict === 'green' ? 'Queue Clear' : samirVerdict === 'amber' ? 'Watch' : 'Action Needed';
+  const samirVerdictBg = samirVerdict === 'green' ? 'bg-green-600' : samirVerdict === 'amber' ? 'bg-yellow-500' : 'bg-red-600';
+
   return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-lg font-bold text-gray-900">Samir — Action Queue</h2>
-        <p className="text-sm text-gray-500">Transaction Signals · Complaints · Webinar Leads · Loans · Churn · Callbacks</p>
-        <p className="text-[10px] text-gray-400 mt-0.5">Action queues always show today's data · Timer updates every 60s</p>
+    <div className="space-y-4">
+      {/* ═══ VERDICT ═══ */}
+      <div className={`${samirVerdictBg} text-white rounded-xl px-5 py-3 flex items-center justify-between`}>
+        <div>
+          <p className="text-2xl font-black">{samirVerdictLabel}</p>
+          <p className="text-xs opacity-80">Samir Action Queue</p>
+        </div>
+        <div className="flex gap-2">
+          {[
+            slaBreaches === 0 ? 'green' : 'red',
+            complaints.length === 0 ? 'green' : complaints.length <= 3 ? 'amber' : 'red',
+            sortedTransactions.length === 0 ? 'green' : 'amber',
+            resolutionRate >= 60 ? 'green' : resolutionRate >= 30 ? 'amber' : 'red',
+          ].map((l, i) => <span key={i} className={`w-3 h-3 rounded-full ${l === 'green' ? 'bg-green-300' : l === 'amber' ? 'bg-yellow-300' : 'bg-red-300'}`} />)}
+        </div>
+      </div>
+
+      {/* ═══ HERO KPIs ═══ */}
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+        <div className={`rounded-xl border p-4 col-span-2 ${slaBreaches > 0 ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
+          <p className="text-[11px] text-gray-500 uppercase tracking-wide font-medium">SLA Breaches</p>
+          <p className={`text-4xl font-black ${slaBreaches > 0 ? 'text-red-700' : 'text-green-700'}`}>{slaBreaches}</p>
+          <p className="text-[10px] text-gray-400">Immediate callbacks &gt;60min</p>
+        </div>
+        <div className={`rounded-xl border p-4 ${complaints.length > 0 ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
+          <p className="text-[11px] text-gray-500 uppercase tracking-wide font-medium">Complaints</p>
+          <p className={`text-2xl font-bold ${complaints.length > 0 ? 'text-red-700' : 'text-green-700'}`}>{complaints.length}</p>
+          <p className="text-[10px] text-gray-400">CX response needed</p>
+        </div>
+        <div className={`rounded-xl border p-4 ${sortedTransactions.length > 0 ? 'bg-yellow-50 border-yellow-200' : 'bg-green-50 border-green-200'}`}>
+          <p className="text-[11px] text-gray-500 uppercase tracking-wide font-medium">Transactions</p>
+          <p className={`text-2xl font-bold ${sortedTransactions.length > 0 ? 'text-yellow-700' : 'text-green-700'}`}>{sortedTransactions.length}</p>
+          <p className="text-[10px] text-gray-400">Medical intent signals</p>
+        </div>
+        <div className={`rounded-xl border p-4 ${resolutionRate >= 60 ? 'bg-green-50 border-green-200' : resolutionRate >= 30 ? 'bg-yellow-50 border-yellow-200' : 'bg-red-50 border-red-200'}`}>
+          <p className="text-[11px] text-gray-500 uppercase tracking-wide font-medium">Resolved</p>
+          <p className={`text-2xl font-bold ${resolutionRate >= 60 ? 'text-green-700' : resolutionRate >= 30 ? 'text-yellow-700' : 'text-red-700'}`}>{resolutionRate}%</p>
+          <p className="text-[10px] text-gray-400">{resolvedCount} done this session</p>
+        </div>
+        <div className="rounded-xl border p-4 bg-gray-50 border-gray-200">
+          <p className="text-[11px] text-gray-500 uppercase tracking-wide font-medium">Open Items</p>
+          <p className="text-2xl font-bold text-gray-800">{totalOpen}</p>
+          <p className="text-[10px] text-gray-400">{sortedLeads.length} leads · {sortedLoans.length} loans · {sortedChurn.length} churn</p>
+        </div>
       </div>
 
       {/* RESOLVED SUMMARY BAR */}
@@ -392,6 +472,8 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                 <tr className="border-b border-gray-100 text-left text-xs text-gray-500">
                   <th className="px-4 py-2">Mobile</th>
                   <th className="px-4 py-2">Agent</th>
+                  <th className="px-4 py-2">Channel</th>
+                  <th className="px-4 py-2">Attempts</th>
                   <th className="px-4 py-2">Time</th>
                   <th className="px-4 py-2">Urgency</th>
                   <th className="px-4 py-2">What They Said</th>
@@ -405,6 +487,7 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
               <tbody>
                 {sortedTransactions.map(r => {
                   const key = `sti-${r.id}`;
+                  const attempts = attemptMap[String(r['Mobile Number'] || '')] || 1;
                   return (
                     <Fragment key={r.id}>
                       <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
@@ -412,6 +495,8 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                           <PhoneNumber number={r['Mobile Number']} />
                         </td>
                         <td className="px-4 py-2">{r['Agent Name'] || '--'}</td>
+                        <td className="px-4 py-2"><ChannelChip record={r} /></td>
+                        <td className="px-4 py-2"><AttemptBadge count={attempts} /></td>
                         <td className="px-4 py-2 whitespace-nowrap text-xs">{r['Call Date'] || '--'} {r['Call Time'] || ''}</td>
                         <td className="px-4 py-2">
                           {r['Samir Handoff Urgency'] ? (
@@ -452,7 +537,7 @@ export default function SamirQueue({ today = [], hotLeads, loans, churn, callbac
                           )}
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={10} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={12} />}
                     </Fragment>
                   );
                 })}

@@ -17,14 +17,14 @@ export default class ErrorBoundary extends Component {
   render() {
     if (this.state.hasError) {
       return (
-        <div className="p-6 bg-red-50 border border-red-200 rounded-lg text-red-700">
-          <p className="font-semibold">Something went wrong rendering this section.</p>
-          <p className="text-sm mt-1 font-mono">{this.state.error?.message}</p>
+        <div className="p-8 text-center">
+          <div className="text-red-500 text-lg font-semibold mb-2">Something went wrong</div>
+          <p className="text-gray-500 text-sm mb-4">{this.state.error?.message || 'An unexpected error occurred'}</p>
           <button
             onClick={() => this.setState({ hasError: false, error: null })}
-            className="mt-3 px-3 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700"
+            className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 text-sm"
           >
-            Retry
+            Try Again
           </button>
         </div>
       );

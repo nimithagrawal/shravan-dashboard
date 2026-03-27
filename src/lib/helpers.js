@@ -604,192 +604,6 @@ export function getComparisonPeriods() {
   };
 }
 
-// ── Color helpers for callback honor and DNP persistence ──
-
-export function callbackHonorColor(rate) {
-  if (rate == null) return 'text-gray-400';
-  if (rate >= 0.85) return 'text-green-600';
-  if (rate >= 0.65) return 'text-amber-500';
-  return 'text-red-500';
-}
-
-export function dnpPersistenceColor(rate) {
-  if (rate == null) return 'text-gray-400';
-  // Lower DNP persistence is better (more pickups)
-  if (rate <= 0.30) return 'text-green-600';
-  if (rate <= 0.50) return 'text-amber-500';
-  return 'text-red-500';
-}
-
-// ── Attempt bucket counts for charts ──
-
-/**
- * Returns [{attempt: '1', count: N}, {attempt: '2', count: N}, ...]
- * from an attemptMap (phone → records[]).
- */
-export function bucketAttemptCounts(attemptMap) {
-  const counts = {};
-  for (const records of Object.values(attemptMap)) {
-    const n = Math.min(records.length, 5);
-    const key = n >= 5 ? '5+' : String(n);
-    counts[key] = (counts[key] || 0) + 1;
-  }
-  return ['1', '2', '3', '4', '5+'].map(k => ({ attempt: k, count: counts[k] || 0 }));
-}
-
-// ── Head metrics computation ──
-
-/**
- * Computes per-agent metrics from an array of records + coaching data.
- * Returns array of agent metric objects.
- */
-export function computeHeadMetrics(records, coachingData = []) {
-  const agentMap = {};
-  for (const r of records) {
-    const name = r['Agent Name'] || 'Unknown';
-    if (!agentMap[name]) agentMap[name] = { name, records: [] };
-    agentMap[name].records.push(r);
-  }
-
-  const agentMetrics = Object.values(agentMap).map(({ name, records: recs }) => {
-    const total = recs.length;
-    const connected = recs.filter(isConnectedCall).length;
-    const completed = recs.filter(r => r['Call Outcome'] === 'Completed').length;
-    const talkTimeSec = recs.reduce((sum, r) => sum + (r['Duration Seconds'] || 0), 0);
-    const coaching = coachingData.find(c => c['Agent Name'] === name);
-
-    return {
-      name,
-      total,
-      connected,
-      completed,
-      talkTimeSec,
-      conversionRate: total > 0 ? (completed / total) * 100 : 0,
-      connectionRate: total > 0 ? (connected / total) * 100 : 0,
-      alertLevel: coaching?.['Alert Level'] || null,
-      qaScore: coaching?.['QA Score'] || null,
-    };
-  });
-
-  return agentMetrics.sort((a, b) => b.total - a.total);
-}
-
-// ── Lead score computation ──
-
-export function computeLeadScore(r) {
-  let score = 0;
-  if (r['Loan Signal'])        score += 3;
-  if (r['Churn Signal'])       score += 2;
-  if (r['Transaction Intent']) score += 2;
-  if (r['Hot Lead'])           score += 2;
-  if (r['Call Outcome'] === 'Callback Requested') score += 1;
-  return Math.min(score, 10);
-}
-
-// ── Utilization channel detection ──
-
-export function detectUtilizationChannel(r) {
-  const sub = (r.callSubCategory || r['Call Category'] || '').toLowerCase();
-  if (sub.includes('pharmacy')) return 'pharmacy';
-  if (sub.includes('diagnostic')) return 'diagnostics';
-  if (sub.includes('healthcare') || sub.includes('health')) return 'healthcare';
-  return 'general';
-}
-
-export function channelTrackColor(channel) {
-  const map = {
-    pharmacy:    'bg-purple-100 text-purple-700',
-    diagnostics: 'bg-teal-100 text-teal-700',
-    healthcare:  'bg-amber-100 text-amber-700',
-    general:     'bg-gray-100 text-gray-700',
-  };
-  return map[channel] || map.general;
-}
-
-// ── Department classification ──
-
-/**
- * Welcome-Call department: callCategory === 'Welcome-Call'
- * (callCategory is mapped from the "Call Disposition" Airtable field)
- */
-export function isWelcomeCallRecord(r) {
-  return r.callCategory === 'Welcome-Call';
-}
-
-/**
- * Utilization department: any non-Welcome-Call outbound category
- */
-export function isUtilizationRecord(r) {
-  const cat = r.callCategory || '';
-  return cat === 'Outbound-Service-Followup' || cat === 'Outbound-Agent-Reachout' || cat === 'Inbound-Subscriber';
-}
-
-// ── Attempt map: phone → sorted list of records ──
-
-/**
- * Builds a map of phone → records[] sorted by date ascending.
- * Used for DNP persistence and attempt depth calculations.
- */
-export function buildAttemptMap(records) {
-  const map = {};
-  for (const r of records) {
-    const phone = r['Phone Number'] || r['phone'] || '';
-    if (!phone) continue;
-    if (!map[phone]) map[phone] = [];
-    map[phone].push(r);
-  }
-  // Sort each bucket by scraped/created time ascending
-  for (const phone of Object.keys(map)) {
-    map[phone].sort((a, b) => {
-      const ta = new Date(a['Scraped At'] || a._createdTime || 0).getTime();
-      const tb = new Date(b['Scraped At'] || b._createdTime || 0).getTime();
-      return ta - tb;
-    });
-  }
-  return map;
-}
-
-// ── DNP Persistence Rate ──
-
-/**
- * Returns { rate: 0-1, dnpPhones: number, total: number }
- * A phone is "DNP persistent" if ALL attempts ended with Did Not Pick.
- */
-export function computeDNPPersistenceRate(attemptMap) {
-  const phones = Object.keys(attemptMap);
-  if (!phones.length) return { rate: 0, dnpPhones: 0, total: 0 };
-  const dnpPhones = phones.filter(p => {
-    const attempts = attemptMap[p];
-    return attempts.length >= 2 && attempts.every(r => (r['Call Outcome'] || '') === 'Did Not Pick');
-  });
-  return { rate: dnpPhones.length / phones.length, dnpPhones: dnpPhones.length, total: phones.length };
-}
-
-// ── Callback honor stats ──
-
-/**
- * Returns { honored: number, total: number, rate: 0-1 }
- * Honored = scheduled callback was attempted within ±2h of the scheduled time.
- */
-export function computeCallbackHonorStats(records) {
-  const scheduled = records.filter(r => {
-    const cb = r['Scheduled Callback'] || r['scheduledCallback'] || '';
-    return !!cb;
-  });
-  if (!scheduled.length) return { honored: 0, total: 0, rate: 0 };
-  let honored = 0;
-  for (const r of scheduled) {
-    const cbStr = r['Scheduled Callback'] || r['scheduledCallback'] || '';
-    const scrapedStr = r['Scraped At'] || r._createdTime || '';
-    if (!cbStr || !scrapedStr) continue;
-    const cbTime = new Date(cbStr).getTime();
-    const scrapedTime = new Date(scrapedStr).getTime();
-    const diffHours = Math.abs(cbTime - scrapedTime) / 3600000;
-    if (diffHours <= 2) honored++;
-  }
-  return { honored, total: scheduled.length, rate: honored / scheduled.length };
-}
-
 /** Format a period date range for display: "1 Mar – 15 Mar 2026" */
 export function formatPeriodLabel(start, end) {
   const fmt = (d) => {
@@ -800,4 +614,382 @@ export function formatPeriodLabel(start, end) {
   const endDate = new Date(end + 'T00:00:00');
   const endFmt = endDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
   return `${fmt(start)} – ${endFmt}`;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Department discriminators
+// Ayushpay has two departments:
+//   Welcome Call  → subscribers identified as Agent/CSP channel partners
+//   Utilization   → actual end-user customers using Ayushpay benefits
+// ─────────────────────────────────────────────────────────────────
+
+/** Welcome Call dept: channel partner / agent / CSP outreach */
+export function isWelcomeCallRecord(r) {
+  return subscriberType(r) === 'Agent/CSP';
+}
+
+/** Utilization dept: existing Ayushpay subscribers (pharmacy / diagnostics / healthcare) */
+export function isUtilizationRecord(r) {
+  return subscriberType(r) === 'Customer';
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Attempt depth — how many times has this subscriber been called?
+// Groups call records by phone number and returns attempt counts.
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * Build a map of phone → attempt count from an array of call records.
+ * Key = normalised phone number (digits only).
+ */
+export function buildAttemptMap(records) {
+  const map = {};
+  for (const r of records) {
+    const raw = r['Phone Number'] || r['Mobile'] || r['Subscriber Phone'] || '';
+    const phone = String(raw).replace(/\D/g, '');
+    if (!phone || phone.length < 5) continue;
+    map[phone] = (map[phone] || 0) + 1;
+  }
+  return map;
+}
+
+/**
+ * Get attempt count for a single record given a pre-built attemptMap.
+ */
+export function getAttemptCount(r, attemptMap) {
+  const raw = r['Phone Number'] || r['Mobile'] || r['Subscriber Phone'] || '';
+  const phone = String(raw).replace(/\D/g, '');
+  return attemptMap[phone] || 1;
+}
+
+/**
+ * DNP Persistence Rate: % of DNP subscribers that have been called ≥ minAttempts times.
+ * DNP = call where connected is false / outcome ≠ Completed / switched off / busy.
+ * @param {object} attemptMap  phone → count from buildAttemptMap
+ * @param {number} minAttempts target (default 6)
+ */
+export function computeDNPPersistenceRate(attemptMap, minAttempts = 6) {
+  const counts = Object.values(attemptMap);
+  if (counts.length === 0) return null;
+  const reached = counts.filter(c => c >= minAttempts).length;
+  return Math.round((reached / counts.length) * 100);
+}
+
+/**
+ * Bucket attempt counts into 1-2, 3-5, 6-8, 8+ for the distribution chart.
+ */
+export function bucketAttemptCounts(attemptMap) {
+  const buckets = { '1-2': 0, '3-5': 0, '6-8': 0, '8+': 0 };
+  for (const count of Object.values(attemptMap)) {
+    if (count <= 2)      buckets['1-2']++;
+    else if (count <= 5) buckets['3-5']++;
+    else if (count <= 8) buckets['6-8']++;
+    else                 buckets['8+']++;
+  }
+  return buckets;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Callback Honor Rate
+// Tracks whether scheduled callbacks are honoured on time (±15 min).
+// ─────────────────────────────────────────────────────────────────
+
+const CALLBACK_HONOR_WINDOW_MS = 15 * 60 * 1000; // ±15 minutes
+
+/**
+ * Given a set of all call records, compute callback honor stats per agent.
+ * Logic:
+ *   - Find records where extractScheduledCallback() returns a resolvedTime or resolvedDate
+ *   - For each such record, look for a subsequent call to the same phone number
+ *     within the honor window of the scheduled time
+ *   - Classify each scheduled callback as: on_time | late | missed
+ *
+ * Returns { overall, byAgent }
+ *   overall: { scheduled, onTime, late, missed, honorRate }
+ *   byAgent: { [agentName]: { scheduled, onTime, late, missed, honorRate, avgDelayMin } }
+ */
+export function computeCallbackHonorStats(allRecords) {
+  // Build a phone → sorted call timestamps map for quick lookup
+  const phoneCallTimes = {};
+  for (const r of allRecords) {
+    const raw = r['Phone Number'] || r['Mobile'] || r['Subscriber Phone'] || '';
+    const phone = String(raw).replace(/\D/g, '');
+    if (!phone || phone.length < 5) continue;
+    const ts = r['Call Timestamp'] || r['Created Time'] || r['_createdTime'] || '';
+    if (!ts) continue;
+    if (!phoneCallTimes[phone]) phoneCallTimes[phone] = [];
+    phoneCallTimes[phone].push({ ts: new Date(ts).getTime(), agentName: r['Agent Name'] || '' });
+  }
+  // Sort each phone's calls by time
+  for (const p of Object.keys(phoneCallTimes)) {
+    phoneCallTimes[p].sort((a, b) => a.ts - b.ts);
+  }
+
+  const byAgent = {};
+  let totalScheduled = 0, totalOnTime = 0, totalLate = 0, totalMissed = 0;
+
+  for (const r of allRecords) {
+    const cb = extractScheduledCallback(r);
+    if (!cb || (!cb.resolvedTime && !cb.resolvedDate)) continue;
+
+    // Build scheduled timestamp
+    let scheduledTs = null;
+    if (cb.resolvedDate && cb.resolvedTime) {
+      // Parse time string like "3pm", "3:30 PM"
+      const timeMatch = cb.resolvedTime.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+      if (timeMatch) {
+        let hours = parseInt(timeMatch[1], 10);
+        const mins = parseInt(timeMatch[2] || '0', 10);
+        const ampm = (timeMatch[3] || '').toLowerCase();
+        if (ampm === 'pm' && hours < 12) hours += 12;
+        if (ampm === 'am' && hours === 12) hours = 0;
+        scheduledTs = new Date(`${cb.resolvedDate}T${String(hours).padStart(2,'0')}:${String(mins).padStart(2,'0')}:00`).getTime();
+      }
+    } else if (cb.resolvedDate) {
+      // No specific time — assume midday
+      scheduledTs = new Date(`${cb.resolvedDate}T12:00:00`).getTime();
+    }
+    if (!scheduledTs || isNaN(scheduledTs)) continue;
+
+    const raw = r['Phone Number'] || r['Mobile'] || r['Subscriber Phone'] || '';
+    const phone = String(raw).replace(/\D/g, '');
+    const agentName = r['Agent Name'] || 'Unknown';
+    if (!byAgent[agentName]) byAgent[agentName] = { scheduled: 0, onTime: 0, late: 0, missed: 0, totalDelayMs: 0, delayCount: 0 };
+
+    totalScheduled++;
+    byAgent[agentName].scheduled++;
+
+    // Find actual call after scheduled time
+    const calls = phoneCallTimes[phone] || [];
+    const nowTs = Date.now();
+    const windowEnd = scheduledTs + 4 * 3600 * 1000; // 4h window to find the callback
+    const actualCall = calls.find(c => c.ts >= scheduledTs - CALLBACK_HONOR_WINDOW_MS && c.ts <= windowEnd);
+
+    if (!actualCall) {
+      // Check if the scheduled time has passed
+      if (scheduledTs < nowTs) {
+        totalMissed++;
+        byAgent[agentName].missed++;
+      }
+      // else: future, not yet due — skip
+    } else {
+      const delayMs = actualCall.ts - scheduledTs;
+      if (Math.abs(delayMs) <= CALLBACK_HONOR_WINDOW_MS) {
+        totalOnTime++;
+        byAgent[agentName].onTime++;
+      } else {
+        totalLate++;
+        byAgent[agentName].late++;
+        byAgent[agentName].totalDelayMs += delayMs;
+        byAgent[agentName].delayCount++;
+      }
+    }
+  }
+
+  const honorRate = (s, o) => s > 0 ? Math.round((o / s) * 100) : null;
+
+  const overall = {
+    scheduled: totalScheduled,
+    onTime: totalOnTime,
+    late: totalLate,
+    missed: totalMissed,
+    honorRate: honorRate(totalScheduled, totalOnTime),
+  };
+
+  const agentStats = {};
+  for (const [name, d] of Object.entries(byAgent)) {
+    agentStats[name] = {
+      scheduled: d.scheduled,
+      onTime: d.onTime,
+      late: d.late,
+      missed: d.missed,
+      honorRate: honorRate(d.scheduled, d.onTime),
+      avgDelayMin: d.delayCount > 0 ? Math.round(d.totalDelayMs / d.delayCount / 60000) : 0,
+    };
+  }
+
+  return { overall, byAgent: agentStats };
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Lead scoring (Welcome Call dept)
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * Compute a 0-100 lead score for a Welcome Call record.
+ * Higher = more ready to activate their Ayushpay subscription.
+ */
+export function computeLeadScore(r) {
+  let score = 0;
+  // Immediate need (0-10 scale → weight 40%)
+  const need = parseFloat(r['Immediate Need Score'] || r['immediate_need_score'] || 0);
+  score += Math.min(need, 10) * 4;
+  // Insurance literacy / awareness level (proxy for conversion readiness)
+  const literacy = (r['Insurance Literacy Level'] || r['insurance_literacy_level'] || '').toLowerCase();
+  if (literacy === 'high')   score += 20;
+  else if (literacy === 'medium') score += 10;
+  // Life event detected (high urgency)
+  const lifeEvent = (r['Life Event Detected'] || r['life_event_detected'] || '').toLowerCase();
+  if (lifeEvent && lifeEvent !== 'none' && lifeEvent !== 'unknown') score += 20;
+  // Competitor mentioned = in-market, just needs redirect
+  const competitor = r['Competitor Mentioned'] || r['competitor_mentioned'] || '';
+  if (competitor && competitor.toLowerCase() !== 'none' && competitor !== '') score += 10;
+  // Digital readiness (easier to onboard digitally)
+  const digital = (r['Digital Readiness'] || r['digital_readiness'] || '').toLowerCase();
+  if (digital === 'high')   score += 6;
+  else if (digital === 'medium') score += 3;
+  // Existing healthcare coverage context: no coverage = highest gap
+  const coverage = (r['Healthcare Coverage Context'] || r['existing_insurance_status'] || '').toLowerCase();
+  if (coverage === 'none' || coverage === '') score += 10;
+  else if (coverage === 'partial') score += 4;
+  return Math.min(100, Math.round(score));
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Health urgency scoring (Utilization dept)
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * Compute a 0-100 health urgency score for a Utilization subscriber.
+ * Higher = more urgent to contact for benefit activation.
+ * @param {object} callRecord  latest call record for this subscriber
+ * @param {object} healthProfile  Family Health Profile record (may be null)
+ * @param {number} daysSinceLastContact  how long ago they were last reached
+ */
+export function computeHealthUrgencyScore(callRecord, healthProfile, daysSinceLastContact = 0) {
+  let score = 0;
+  if (healthProfile) {
+    if (healthProfile['Surgery Needed'])        score += 40;
+    if (healthProfile['Hospitalization Needed']) score += 30;
+    const medSpend = parseFloat(healthProfile['Monthly Medicine Spend'] || 0);
+    if (medSpend > 5000)      score += 20;
+    else if (medSpend > 2000) score += 10;
+  }
+  // Pharmacy frequency from call intel
+  const pharmaFreq = (callRecord?.['Pharmacy Frequency'] || callRecord?.['pharmacy_frequency'] || '').toLowerCase();
+  if (pharmaFreq === 'high')   score += 10;
+  else if (pharmaFreq === 'medium') score += 5;
+  // Recency penalty: longer gap = higher urgency
+  if (daysSinceLastContact > 30) score += 10;
+  else if (daysSinceLastContact > 14) score += 5;
+  return Math.min(100, Math.round(score));
+}
+
+/**
+ * Classify health urgency into channel track.
+ * Returns 'healthcare' | 'pharmacy' | 'diagnostics' | 'general'
+ */
+export function getChannelTrack(callRecord, healthProfile) {
+  if (healthProfile?.['Surgery Needed'] || healthProfile?.['Hospitalization Needed']) return 'healthcare';
+  const medSpend = parseFloat(healthProfile?.['Monthly Medicine Spend'] || 0);
+  const takesMeds = healthProfile?.['Takes Medicine'];
+  const pharmaFreq = (callRecord?.['Pharmacy Frequency'] || callRecord?.['pharmacy_frequency'] || '').toLowerCase();
+  if (takesMeds || medSpend > 0 || pharmaFreq !== '') return 'pharmacy';
+  const labTest = healthProfile?.['Lab Test Type'];
+  if (labTest) return 'diagnostics';
+  return 'general';
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Head / team rollup helpers
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * Given call records and a team config (array of { headName, agents[] }),
+ * return per-head aggregated metrics.
+ */
+export function computeHeadMetrics(records, teamConfig) {
+  const headMap = {};
+  for (const team of teamConfig) {
+    headMap[team.headName] = {
+      headName: team.headName,
+      department: team.department,
+      agents: team.agents,
+      calls: [],
+    };
+  }
+  for (const r of records) {
+    const agentName = r['Agent Name'] || '';
+    for (const team of teamConfig) {
+      if (team.agents.includes(agentName)) {
+        headMap[team.headName].calls.push(r);
+        break;
+      }
+    }
+  }
+  return Object.values(headMap).map(h => {
+    const calls = h.calls;
+    const connected = calls.filter(r => isConnectedCall(r));
+    const activated = calls.filter(r => (r['Call Label'] || r['Status'] || '') === 'Activated');
+    const withCallback = calls.filter(r => extractScheduledCallback(r));
+    const violations = connected.filter(r => r['Violation']);
+    const qaScores = connected.map(r => r['QA Score']).filter(v => v != null);
+    const avgQA = qaScores.length > 0 ? (qaScores.reduce((a, b) => a + b, 0) / qaScores.length).toFixed(1) : null;
+    return {
+      headName: h.headName,
+      department: h.department,
+      agentCount: h.agents.length,
+      totalCalls: calls.length,
+      connectedCalls: connected.length,
+      activatedCalls: activated.length,
+      activationRate: connected.length > 0 ? Math.round((activated.length / connected.length) * 100) : 0,
+      violationCount: violations.length,
+      violationRate: connected.length > 0 ? Math.round((violations.length / connected.length) * 100) : 0,
+      avgQAScore: avgQA,
+      callbacksScheduled: withCallback.length,
+    };
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Utilization channel engagement helpers
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * Classify a utilization call by which Ayushpay service channel it's about.
+ * Returns 'pharmacy' | 'diagnostics' | 'healthcare' | 'general'
+ */
+export function detectUtilizationChannel(r) {
+  const summary = (r['Summary'] || '').toLowerCase();
+  const coachingMoment = (r['Coaching Moment'] || r['coaching_moment'] || '').toLowerCase();
+  const combined = summary + ' ' + coachingMoment;
+  if (combined.includes('surgery') || combined.includes('hospitaliz') || combined.includes('opd') ||
+      combined.includes('operation') || combined.includes('admitted')) return 'healthcare';
+  if (combined.includes('lab') || combined.includes('diagnostic') || combined.includes('test') ||
+      combined.includes('blood test') || combined.includes('scan') || combined.includes('x-ray')) return 'diagnostics';
+  if (combined.includes('medicine') || combined.includes('pharmacy') || combined.includes('tablet') ||
+      combined.includes('prescription') || combined.includes('drug') || combined.includes('medic')) return 'pharmacy';
+  const pharmaFreq = (r['Pharmacy Frequency'] || r['pharmacy_frequency'] || '').toLowerCase();
+  if (pharmaFreq && pharmaFreq !== 'unknown') return 'pharmacy';
+  return 'general';
+}
+
+/**
+ * Color classes for channel track badges.
+ */
+export function channelTrackColor(track) {
+  if (track === 'healthcare')  return 'bg-red-100 text-red-700';
+  if (track === 'pharmacy')    return 'bg-green-100 text-green-700';
+  if (track === 'diagnostics') return 'bg-blue-100 text-blue-700';
+  return 'bg-gray-100 text-gray-500';
+}
+
+/**
+ * Color classes for callback honor rate display.
+ */
+export function callbackHonorColor(rate) {
+  if (rate == null) return 'text-gray-400';
+  if (rate >= 85) return 'text-pass';
+  if (rate >= 60) return 'text-amber';
+  return 'text-fail';
+}
+
+/**
+ * Color classes for DNP persistence rate display.
+ */
+export function dnpPersistenceColor(rate) {
+  if (rate == null) return 'text-gray-400';
+  if (rate >= 70) return 'text-pass';
+  if (rate >= 40) return 'text-amber';
+  return 'text-fail';
 }

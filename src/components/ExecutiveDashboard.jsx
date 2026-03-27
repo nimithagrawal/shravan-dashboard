@@ -1,408 +1,571 @@
 import { useState, useEffect, useMemo } from 'react';
-import { BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
+import {
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip,
+  ResponsiveContainer, ReferenceLine,
+} from 'recharts';
 import { fetchRecordsForPeriod } from '../lib/airtable';
-import { isConnectedCall } from '../lib/helpers';
+import { isWelcomeCallRecord, isUtilizationRecord, getPeriodDates, getPreviousPeriodDates } from '../lib/helpers';
 
-// ── Period helpers (IST) ──
-function todayIST() {
-  return new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-}
-function fmtDate(d) {
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-}
-function addDays(d, n) { const r = new Date(d); r.setDate(r.getDate() + n); return r; }
-function fmtShort(d) {
-  return new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
-}
+// ── Strategic milestone targets from shareholder briefing ──
+const MILESTONES = {
+  m2:  { activation: 27.5, utilization: 8,  renewal: 63, label: 'M2 Target'  },
+  m4:  { activation: 37.5, utilization: 13.5, renewal: 68, label: 'M4 Target' },
+  m6:  { activation: 45,   utilization: 18, renewal: 72, label: 'M6 Target'  },
+  m12: { activation: 52.5, utilization: 23.5, renewal: 76.5, label: 'M12 Target' },
+};
+const BASELINE = { activation: 20, utilization: 5, renewal: 60 };
 
-function getPeriodBounds(mode) {
-  const now = todayIST();
+// ── Period definitions ──
+const PERIODS = [
+  { key: 'week',    label: 'This Week',     sub: 'Mon → today' },
+  { key: 'month',   label: 'This Month',    sub: 'MTD' },
+  { key: 'quarter', label: 'This Quarter',  sub: 'Last 90 days' },
+];
+
+function getQuarterDates() {
+  const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const dow = today.getDay();
-  const thisMon = addDays(today, -(dow === 0 ? 6 : dow - 1));
+  const start = new Date(today); start.setDate(start.getDate() - 89);
+  const fmt = d => d.toISOString().slice(0, 10);
+  return { start: fmt(start), end: fmt(today) };
+}
 
-  if (mode === 'wow') {
-    const start = thisMon;
-    const prevStart = addDays(thisMon, -7);
-    const prevEnd = addDays(thisMon, -1);
-    return {
-      curr: { start: fmtDate(start), end: fmtDate(today), label: 'This Week' },
-      prev: { start: fmtDate(prevStart), end: fmtDate(prevEnd), label: 'Last Week' },
-    };
-  }
-  if (mode === 'mom') {
-    const currStart = new Date(today.getFullYear(), today.getMonth(), 1);
-    const prevStart = new Date(today.getFullYear(), today.getMonth() - 1, 1);
-    const prevEnd = new Date(today.getFullYear(), today.getMonth(), 0);
-    return {
-      curr: { start: fmtDate(currStart), end: fmtDate(today), label: 'This Month' },
-      prev: { start: fmtDate(prevStart), end: fmtDate(prevEnd), label: 'Last Month' },
-    };
-  }
-  // qtd
-  const qMonth = Math.floor(today.getMonth() / 3) * 3;
-  const qStart = new Date(today.getFullYear(), qMonth, 1);
-  const prevQStart = new Date(today.getFullYear(), qMonth - 3, 1);
-  const prevQEnd = new Date(today.getFullYear(), qMonth, 0);
+function getPeriod(key) {
+  if (key === 'quarter') return getQuarterDates();
+  return getPeriodDates(key === 'month' ? 'mtd' : 'week');
+}
+
+// ── Colour system ──
+const C = {
+  green:  { bg: 'bg-green-50  border-green-200',  text: 'text-green-700',  dot: 'bg-green-500'  },
+  amber:  { bg: 'bg-yellow-50 border-yellow-200', text: 'text-yellow-700', dot: 'bg-yellow-500' },
+  red:    { bg: 'bg-red-50    border-red-200',    text: 'text-red-700',    dot: 'bg-red-500'    },
+  blue:   { bg: 'bg-blue-50   border-blue-200',   text: 'text-blue-700',   dot: 'bg-blue-500'   },
+  purple: { bg: 'bg-purple-50 border-purple-200', text: 'text-purple-700', dot: 'bg-purple-500' },
+};
+
+function light(val, green, amber) {
+  if (val >= green) return 'green';
+  if (val >= amber) return 'amber';
+  return 'red';
+}
+
+function trendArrow(curr, prev) {
+  if (prev == null || prev === curr) return null;
+  const pct = prev === 0 ? 100 : Math.abs(((curr - prev) / prev) * 100);
+  const up = curr > prev;
   return {
-    curr: { start: fmtDate(qStart), end: fmtDate(today), label: 'This Quarter' },
-    prev: { start: fmtDate(prevQStart), end: fmtDate(prevQEnd), label: 'Last Quarter' },
+    icon: up ? '▲' : '▼',
+    color: up ? 'text-green-600' : 'text-red-500',
+    label: `${up ? '+' : '-'}${pct.toFixed(0)}% vs prev`,
   };
 }
 
-// ── Metrics computation ──
-function computeMetrics(records) {
-  if (!records || records.length === 0) return null;
-  const total = records.length;
-  const connected = records.filter(isConnectedCall).length;
-  const connRate = total > 0 ? Math.round((connected / total) * 100) : 0;
-
-  const hotLeads = records.filter(r => r['Hot Lead']).length;
-  const churnSignals = records.filter(r => r['Churn Signal']).length;
-  const loanSignals = records.filter(r => r['Loan Signal']).length;
-  const hotRate = connected > 0 ? +((hotLeads / connected) * 100).toFixed(1) : 0;
-  const churnRate = connected > 0 ? +((churnSignals / connected) * 100).toFixed(1) : 0;
-
-  const talkTimeSec = records.reduce((s, r) => s + (r['Duration Seconds'] || 0), 0);
-  const talkTimeHrs = (talkTimeSec / 3600).toFixed(1);
-
-  // QA from individual call fields
-  const qaFields = [
-    'Q1 User Agent Screened', 'Q2 Cashback Correct', 'Q3 WA Link Sent',
-    'Q4 Hi Attempt Made', 'Q5 Cashback Mechanic Explained', 'Q6 No Improvised Claims',
-  ];
-  const qaScoredRecords = records.filter(r => qaFields.some(f => r[f] !== null && r[f] !== undefined));
-  const qaScores = qaScoredRecords.map(r => qaFields.filter(f => r[f]).length);
-  const qaAvg = qaScores.length > 0
-    ? +(qaScores.reduce((s, v) => s + v, 0) / qaScores.length).toFixed(2)
-    : null;
-
-  const q2Passes = qaScoredRecords.filter(r => r['Q2 Cashback Correct']).length;
-  const q2Rate = qaScoredRecords.length > 0
-    ? Math.round((q2Passes / qaScoredRecords.length) * 100)
-    : null;
-
-  return { total, connected, connRate, hotLeads, hotRate, churnSignals, churnRate, loanSignals, talkTimeHrs, qaAvg, q2Rate, qaScoredCount: qaScoredRecords.length };
-}
-
-// Agent breakdown
-function computeAgentTable(records) {
-  const map = {};
-  for (const r of records) {
-    const a = r['Agent Name'] || 'Unknown';
-    if (!map[a]) map[a] = { name: a, total: 0, connected: 0, hotLeads: 0, churnSignals: 0, qaScores: [], talkTimeSec: 0 };
-    const m = map[a];
-    m.total++;
-    if (isConnectedCall(r)) m.connected++;
-    if (r['Hot Lead']) m.hotLeads++;
-    if (r['Churn Signal']) m.churnSignals++;
-    m.talkTimeSec += r['Duration Seconds'] || 0;
-    const qaFields = ['Q1 User Agent Screened','Q2 Cashback Correct','Q3 WA Link Sent','Q4 Hi Attempt Made','Q5 Cashback Mechanic Explained','Q6 No Improvised Claims'];
-    if (qaFields.some(f => r[f] !== null && r[f] !== undefined)) {
-      m.qaScores.push(qaFields.filter(f => r[f]).length);
-    }
+// ── Milestone pace: which M target does our current rate put us on track for? ──
+function milestoneStatus(rate, metric) {
+  const keys = ['m2', 'm4', 'm6', 'm12'];
+  for (const k of keys) {
+    if (rate >= MILESTONES[k][metric] * 0.95) return { label: `On track for ${MILESTONES[k].label}`, color: 'text-green-700', key: k };
   }
-  return Object.values(map).map(m => ({
-    ...m,
-    connRate: m.total > 0 ? Math.round((m.connected / m.total) * 100) : 0,
-    hotRate: m.connected > 0 ? +((m.hotLeads / m.connected) * 100).toFixed(1) : 0,
-    qaAvg: m.qaScores.length > 0
-      ? +(m.qaScores.reduce((s,v)=>s+v,0) / m.qaScores.length).toFixed(1)
-      : null,
-    talkTimeHrs: (m.talkTimeSec / 3600).toFixed(1),
-  })).sort((a, b) => b.hotLeads - a.hotLeads);
+  return { label: `Below ${MILESTONES.m2.label} pace`, color: 'text-red-600', key: null };
 }
 
-// Daily trend data (group records by date)
-function computeDailyTrend(records) {
-  const byDate = {};
-  for (const r of records) {
-    const d = (r['Call Date'] || '').slice(0, 10);
-    if (!d) continue;
-    if (!byDate[d]) byDate[d] = { date: d, total: 0, connected: 0, hotLeads: 0 };
-    byDate[d].total++;
-    if (isConnectedCall(r)) byDate[d].connected++;
-    if (r['Hot Lead']) byDate[d].hotLeads++;
-  }
-  return Object.values(byDate)
-    .sort((a, b) => a.date.localeCompare(b.date))
-    .map(d => ({
-      ...d,
-      label: fmtShort(d.date),
-      connRate: d.total > 0 ? Math.round((d.connected / d.total) * 100) : 0,
-    }));
-}
-
-// Delta between two values
-function delta(curr, prev) {
-  if (curr == null || prev == null || prev === 0) return null;
-  return Math.round(((curr - prev) / prev) * 100);
-}
-
-function DeltaBadge({ pct }) {
-  if (pct == null) return null;
-  const color = pct >= 0 ? '#16A34A' : '#DC2626';
+// ── micro components ──
+function KpiCard({ label, value, sub, c, trend, milestone, wide }) {
+  const col = C[c] || C.blue;
   return (
-    <span style={{ fontSize: 11, color, fontWeight: 600, marginLeft: 6 }}>
-      {pct >= 0 ? '↑' : '↓'}{Math.abs(pct)}%
-    </span>
-  );
-}
-
-function L0Card({ label, value, prev, unit = '', color, description }) {
-  const d = delta(value, prev);
-  return (
-    <div style={{ background: '#fff', borderRadius: 10, padding: '16px 20px',
-      border: '1px solid #E5E7EB', flex: 1, minWidth: 140 }}>
-      <div style={{ fontSize: 11, color: '#6B7280', textTransform: 'uppercase',
-        letterSpacing: '0.05em', marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 26, fontWeight: 800, color: color || '#111827' }}>
-        {value != null ? `${value}${unit}` : '—'}
-        <DeltaBadge pct={d} />
+    <div className={`rounded-xl border p-4 ${col.bg} ${wide ? 'col-span-2' : ''}`}>
+      <div className="flex items-center justify-between mb-1">
+        <p className="text-[11px] text-gray-500 uppercase tracking-wide font-medium">{label}</p>
+        <span className={`w-2.5 h-2.5 rounded-full ${col.dot}`} />
       </div>
-      {prev != null && (
-        <div style={{ fontSize: 11, color: '#9CA3AF', marginTop: 2 }}>
-          prev: {prev}{unit}
-        </div>
+      <p className={`${wide ? 'text-4xl' : 'text-2xl'} font-black ${col.text}`}>{value}</p>
+      {sub && <p className="text-[11px] text-gray-500 mt-0.5">{sub}</p>}
+      {trend && (
+        <p className={`text-[11px] font-semibold mt-0.5 ${trend.color}`}>{trend.icon} {trend.label}</p>
       )}
-      {description && <div style={{ fontSize: 11, color: '#6B7280', marginTop: 4 }}>{description}</div>}
+      {milestone && (
+        <p className={`text-[10px] mt-1 font-medium ${milestone.color}`}>{milestone.label}</p>
+      )}
     </div>
   );
 }
 
-function SectionLabel({ children }) {
+function SectionHeader({ icon, label, tag }) {
   return (
-    <div style={{ fontSize: 11, fontWeight: 700, color: '#6B7280', textTransform: 'uppercase',
-      letterSpacing: '0.08em', margin: '20px 0 10px' }}>
-      {children}
+    <div className="flex items-center gap-2 mb-3 mt-2">
+      <span className="text-base">{icon}</span>
+      <h3 className="text-xs font-bold text-gray-700 uppercase tracking-widest">{label}</h3>
+      {tag && <span className="text-[10px] bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{tag}</span>}
     </div>
   );
 }
 
-export default function ExecutiveDashboard() {
-  const [mode, setMode] = useState('wow');
-  const [currRecords, setCurrRecords] = useState([]);
-  const [prevRecords, setPrevRecords] = useState([]);
-  const [loading, setLoading] = useState(true);
+function FunnelBar({ label, value, max, color, pct }) {
+  const w = max > 0 ? Math.round((value / max) * 100) : 0;
+  return (
+    <div className="mb-3">
+      <div className="flex justify-between text-xs mb-1">
+        <span className="text-gray-600 font-medium">{label}</span>
+        <span className="font-mono text-gray-700">{value.toLocaleString()} {pct != null ? `(${pct}%)` : ''}</span>
+      </div>
+      <div className="bg-gray-100 rounded-full h-3">
+        <div className={`${color} h-3 rounded-full`} style={{ width: `${Math.min(w, 100)}%` }} />
+      </div>
+    </div>
+  );
+}
 
-  const bounds = getPeriodBounds(mode);
+function PaceMeter({ label, current, baseline, targets }) {
+  const max = Math.max(targets.m12 * 1.1, current * 1.1);
+  const keys = ['m2', 'm4', 'm6', 'm12'];
+  return (
+    <div className="mb-4">
+      <div className="flex justify-between text-xs mb-1">
+        <span className="text-gray-600 font-medium">{label}</span>
+        <span className="font-bold text-gray-800">{current.toFixed(1)}%</span>
+      </div>
+      <div className="relative bg-gray-100 rounded-full h-4">
+        {/* milestone markers */}
+        {keys.map(k => {
+          const x = Math.min((targets[k] / max) * 100, 100);
+          return (
+            <div key={k} className="absolute top-0 h-4 w-px bg-gray-400 opacity-50" style={{ left: `${x}%` }} />
+          );
+        })}
+        {/* baseline */}
+        <div className="absolute top-0 h-4 w-px bg-gray-600 opacity-70"
+          style={{ left: `${Math.min((baseline / max) * 100, 100)}%` }} />
+        {/* current */}
+        <div className="bg-blue-500 h-4 rounded-full transition-all"
+          style={{ width: `${Math.min((current / max) * 100, 100)}%` }} />
+      </div>
+      <div className="flex justify-between text-[9px] text-gray-400 mt-1">
+        <span>Baseline {baseline}%</span>
+        {keys.map(k => <span key={k}>{MILESTONES[k].label}: {targets[k]}%</span>)}
+      </div>
+    </div>
+  );
+}
+
+function Skeleton() {
+  return (
+    <div className="space-y-4 animate-pulse p-4">
+      <div className="h-14 bg-gray-200 rounded-xl" />
+      <div className="grid grid-cols-4 gap-3">
+        {[...Array(8)].map((_, i) => <div key={i} className="h-28 bg-gray-200 rounded-xl" />)}
+      </div>
+      <div className="h-40 bg-gray-200 rounded-xl" />
+    </div>
+  );
+}
+
+// ── Compute all stats from raw call records ──
+function computeStats(records) {
+  if (!records || records.length === 0) return null;
+
+  const wc   = records.filter(isWelcomeCallRecord);
+  const util = records.filter(isUtilizationRecord);
+
+  // L0 — Business outcomes
+
+  // Activations (Welcome Call dept)
+  const wcConnected = wc.filter(r => {
+    const o = (r['Call Outcome'] || '').toLowerCase();
+    return !o.includes('dnp') && !o.includes('no answer') && !o.includes('did not');
+  });
+  const activated = wc.filter(r =>
+    (r['Activation Status'] || '').toLowerCase().includes('activated')
+  );
+  const activationRate = wcConnected.length > 0 ? activated.length / wcConnected.length * 100 : 0;
+
+  // Utilization engagement (>2 min talk time = genuine engagement)
+  const utilConnected = util.filter(r => {
+    const o = (r['Call Outcome'] || '').toLowerCase();
+    return !o.includes('dnp') && !o.includes('no answer') && !o.includes('did not');
+  });
+  const utilEngaged = util.filter(r => (r['Talk Time'] || 0) > 120);
+  const utilizationRate = utilConnected.length > 0 ? utilEngaged.length / utilConnected.length * 100 : 0;
+
+  // Churn signals
+  const churnSignals = records.filter(r => r['Churn Signal']).length;
+  const churnRiskPct = records.length > 0 ? churnSignals / records.length * 100 : 0;
+
+  // Loan pipeline
+  const loanSignals = records.filter(r => r['Loan Signal']).length;
+
+  // Sentiment uplift (util dept — measures care effectiveness)
+  const sentimentPairs = util.filter(r =>
+    r['Sentiment Score Start'] != null && r['Sentiment Score End'] != null
+  );
+  const avgSentimentDelta = sentimentPairs.length > 0
+    ? sentimentPairs.reduce((s, r) =>
+        s + ((r['Sentiment Score End'] || 0) - (r['Sentiment Score Start'] || 0)), 0
+      ) / sentimentPairs.length
+    : null;
+
+  // L1 — Process health
+
+  const allConnected = records.filter(r => {
+    const o = (r['Call Outcome'] || '').toLowerCase();
+    return !o.includes('dnp') && !o.includes('no answer') && !o.includes('did not');
+  });
+  const connectionRate = records.length > 0 ? allConnected.length / records.length * 100 : 0;
+
+  // Pitch quality — WC only
+  const pitchScored = wc.filter(r => r['Pitch Completion Score'] != null);
+  const pitchComplete = pitchScored.filter(r => (r['Pitch Completion Score'] || 0) >= 80).length;
+  const pitchRate = pitchScored.length > 0 ? pitchComplete / pitchScored.length * 100 : null;
+
+  // QA
+  const qaRecs = records.filter(r => r['QA Score'] != null);
+  const avgQA = qaRecs.length > 0
+    ? qaRecs.reduce((s, r) => s + (r['QA Score'] || 0), 0) / qaRecs.length
+    : null;
+
+  // Compliance
+  const violations = records.filter(r => r['Compliance Violation']).length;
+  const complianceRate = records.length > 0 ? (records.length - violations) / records.length * 100 : 100;
+
+  // Talk time
+  const durations = allConnected.map(r => r['Talk Time'] || r['Duration Seconds'] || 0).filter(Boolean);
+  const avgTalkTime = durations.length > 0
+    ? durations.reduce((a, b) => a + b, 0) / durations.length
+    : 0;
+
+  // Callbacks honored
+  const callbacksNeeded = records.filter(r => r['Needs Callback'] || r['Callback Requested']).length;
+  const callbacksDone   = records.filter(r =>
+    (r['Needs Callback'] || r['Callback Requested']) && r['Callback Status'] === 'Completed'
+  ).length;
+  const callbackHonorRate = callbacksNeeded > 0 ? callbacksDone / callbacksNeeded * 100 : null;
+
+  // Hot signals
+  const hotLeads = records.filter(r => r['Hot Lead']).length;
+
+  // Unique subscribers reached
+  const phones = new Set(records.map(r => r['Phone Number'] || r['Mobile Number']).filter(Boolean));
+
+  return {
+    total: records.length, wcTotal: wc.length, utilTotal: util.length,
+    // L0
+    activated: activated.length, wcConnected: wcConnected.length, activationRate,
+    utilEngaged: utilEngaged.length, utilConnected: utilConnected.length, utilizationRate,
+    churnSignals, churnRiskPct, loanSignals, hotLeads, avgSentimentDelta,
+    // L1
+    allConnected: allConnected.length, connectionRate,
+    pitchComplete, pitchScored: pitchScored.length, pitchRate,
+    avgQA, qaRecs: qaRecs.length, complianceRate, violations,
+    avgTalkTime, callbackHonorRate, callbacksNeeded, callbacksDone,
+    uniqueSubscribers: phones.size,
+  };
+}
+
+// ── Main export ──
+export default function ExecutiveDashboard() {
+  const [activePeriod, setActivePeriod] = useState('month');
+  const [curr, setCurr] = useState([]);
+  const [prev, setPrev] = useState([]);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    let cancelled = false;
     setLoading(true);
+    const { start, end } = getPeriod(activePeriod);
+    const { start: ps, end: pe } = getPreviousPeriodDates(start, end);
     Promise.all([
-      fetchRecordsForPeriod(bounds.curr.start, bounds.curr.end).catch(() => []),
-      fetchRecordsForPeriod(bounds.prev.start, bounds.prev.end).catch(() => []),
-    ]).then(([curr, prev]) => {
-      if (cancelled) return;
-      setCurrRecords(curr);
-      setPrevRecords(prev);
-      setLoading(false);
-    });
-    return () => { cancelled = true; };
-  }, [mode, bounds.curr.start, bounds.curr.end, bounds.prev.start, bounds.prev.end]);
+      fetchRecordsForPeriod(start, end),
+      fetchRecordsForPeriod(ps, pe).catch(() => []),
+    ]).then(([c, p]) => {
+      setCurr(c);
+      setPrev(p);
+    }).catch(() => {
+      setCurr([]);
+      setPrev([]);
+    }).finally(() => setLoading(false));
+  }, [activePeriod]);
 
-  const currM = useMemo(() => computeMetrics(currRecords), [currRecords]);
-  const prevM = useMemo(() => computeMetrics(prevRecords), [prevRecords]);
-  const agentTable = useMemo(() => computeAgentTable(currRecords), [currRecords]);
-  const dailyTrend = useMemo(() => computeDailyTrend(currRecords), [currRecords]);
+  const stats = useMemo(() => computeStats(curr), [curr]);
+  const prevStats = useMemo(() => computeStats(prev), [prev]);
 
-  const MODES = [
-    { key: 'wow', label: 'WoW' },
-    { key: 'mom', label: 'MoM' },
-    { key: 'qtd', label: 'Quarterly' },
+  const { start, end } = getPeriod(activePeriod);
+
+  if (loading) return <Skeleton />;
+  if (!stats) return (
+    <div className="p-8 text-center text-gray-400">
+      <p className="text-lg font-medium mb-1">No call records found for this period.</p>
+      <p className="text-sm">{start} → {end}</p>
+    </div>
+  );
+
+  // Verdict
+  const verdictInputs = [
+    stats.activationRate >= MILESTONES.m2.activation * 0.9,
+    stats.utilizationRate >= MILESTONES.m2.utilization * 0.9,
+    stats.churnRiskPct < 10,
+    stats.complianceRate >= 95,
+    stats.connectionRate >= 40,
   ];
+  const greenCount = verdictInputs.filter(Boolean).length;
+  const verdict = greenCount >= 4 ? 'green' : greenCount >= 2 ? 'amber' : 'red';
+  const verdictText = verdict === 'green' ? 'On Track' : verdict === 'amber' ? 'Watch' : 'Action Needed';
+
+  const mActivation = milestoneStatus(stats.activationRate, 'activation');
+  const mUtil = milestoneStatus(stats.utilizationRate, 'utilization');
 
   return (
-    <div style={{ padding: 20, maxWidth: 1100 }}>
-      {/* Header + mode toggle */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
+    <div className="p-4 space-y-4 max-w-6xl">
+
+      {/* ── Period selector ── */}
+      <div className="flex items-center gap-3 flex-wrap">
+        {PERIODS.map(p => (
+          <button key={p.key} onClick={() => setActivePeriod(p.key)}
+            className={`px-4 py-2 rounded-lg text-sm font-semibold border transition-colors ${
+              activePeriod === p.key
+                ? 'bg-gray-900 text-white border-gray-900'
+                : 'bg-white text-gray-600 border-gray-300 hover:bg-gray-50'
+            }`}>
+            {p.label}
+          </button>
+        ))}
+        <span className="text-xs text-gray-400">{start} → {end} · {stats.total.toLocaleString()} calls</span>
+      </div>
+
+      {/* ── Verdict banner ── */}
+      <div className={`rounded-xl px-5 py-3 flex items-center justify-between ${
+        verdict === 'green' ? 'bg-green-600' : verdict === 'amber' ? 'bg-yellow-500' : 'bg-red-600'
+      } text-white`}>
         <div>
-          <h2 style={{ fontWeight: 800, fontSize: 20, margin: 0 }}>Executive View</h2>
-          <div style={{ fontSize: 12, color: '#6B7280', marginTop: 2 }}>
-            {bounds.curr.label}: {bounds.curr.start} → {bounds.curr.end}
-            &nbsp;|&nbsp;vs {bounds.prev.label}
-          </div>
+          <p className="text-2xl font-black">{verdictText}</p>
+          <p className="text-xs opacity-75">
+            {stats.uniqueSubscribers.toLocaleString()} subscribers reached · {stats.wcTotal} welcome · {stats.utilTotal} utilization
+          </p>
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          {MODES.map(m => (
-            <button key={m.key} onClick={() => setMode(m.key)}
-              style={{ padding: '6px 14px', borderRadius: 20, fontSize: 13, fontWeight: 600,
-                border: 'none', cursor: 'pointer',
-                background: mode === m.key ? '#1D4ED8' : '#F3F4F6',
-                color: mode === m.key ? '#fff' : '#374151' }}>
-              {m.label}
-            </button>
+        <div className="flex gap-2">
+          {verdictInputs.map((v, i) => (
+            <span key={i} className={`w-3 h-3 rounded-full ${v ? 'bg-white opacity-90' : 'bg-white opacity-30'}`} />
           ))}
         </div>
       </div>
 
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: 60, color: '#9CA3AF' }}>Loading strategic data...</div>
-      ) : !currM ? (
-        <div style={{ textAlign: 'center', padding: 60, color: '#9CA3AF' }}>No data for this period.</div>
-      ) : (
-        <>
-          {/* L0 — Business Outcomes */}
-          <SectionLabel>L0 · Business Outcomes</SectionLabel>
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-            <L0Card
-              label="Hot Leads"
-              value={currM.hotLeads}
-              prev={prevM?.hotLeads}
-              color={currM.hotLeads > 0 ? '#15803D' : '#374151'}
-              description="High-intent pipeline"
-            />
-            <L0Card
-              label="Hot Lead Rate"
-              value={currM.hotRate}
-              prev={prevM?.hotRate}
-              unit="%"
-              color={currM.hotRate >= 5 ? '#15803D' : currM.hotRate >= 2 ? '#D97706' : '#DC2626'}
-              description="of connected calls"
-            />
-            <L0Card
-              label="Churn Signals"
-              value={currM.churnSignals}
-              prev={prevM?.churnSignals}
-              color={currM.churnSignals > 10 ? '#DC2626' : '#D97706'}
-              description="Retention risk flagged"
-            />
-            <L0Card
-              label="Loan Signals"
-              value={currM.loanSignals}
-              prev={prevM?.loanSignals}
-              color="#7C3AED"
-              description="Loan interest expressed"
-            />
-            <L0Card
-              label="Connection Rate"
-              value={currM.connRate}
-              prev={prevM?.connRate}
-              unit="%"
-              color={currM.connRate >= 45 ? '#15803D' : currM.connRate >= 30 ? '#D97706' : '#DC2626'}
-              description="Human answers / total dials"
-            />
-          </div>
+      {/* ══════════════════════════════════════════
+          L0 — BUSINESS OUTCOMES
+      ══════════════════════════════════════════ */}
+      <SectionHeader icon="📊" label="L0 — Business Outcomes" tag="What moves revenue" />
 
-          {/* L1 — Operational Indicators */}
-          <SectionLabel>L1 · Operational Indicators</SectionLabel>
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-            <L0Card label="Total Calls" value={currM.total} prev={prevM?.total} />
-            <L0Card label="Connected Calls" value={currM.connected} prev={prevM?.connected} />
-            <L0Card
-              label="Talk Time"
-              value={currM.talkTimeHrs}
-              prev={prevM?.talkTimeHrs}
-              unit="h"
-              description="Total agent talk time"
-            />
-            <L0Card
-              label="Team QA Avg"
-              value={currM.qaAvg != null ? `${currM.qaAvg}/6` : '—'}
-              prev={prevM?.qaAvg != null ? prevM.qaAvg : null}
-              color={currM.qaAvg >= 4.5 ? '#15803D' : currM.qaAvg >= 3 ? '#D97706' : '#DC2626'}
-              description={`${currM.qaScoredCount} calls scored`}
-            />
-            <L0Card
-              label="Q2 (Cashback) Rate"
-              value={currM.q2Rate != null ? currM.q2Rate : '—'}
-              prev={prevM?.q2Rate}
-              unit={currM.q2Rate != null ? '%' : ''}
-              color={currM.q2Rate >= 60 ? '#15803D' : currM.q2Rate >= 30 ? '#D97706' : '#DC2626'}
-              description="Biggest script miss"
-            />
-          </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {/* Activation — dominant metric */}
+        <KpiCard
+          label="Activation Rate"
+          value={`${stats.activationRate.toFixed(1)}%`}
+          sub={`${stats.activated} activated / ${stats.wcConnected} connected`}
+          c={light(stats.activationRate, MILESTONES.m2.activation, MILESTONES.m2.activation * 0.75)}
+          trend={trendArrow(stats.activationRate, prevStats?.activationRate)}
+          milestone={mActivation}
+          wide
+        />
 
-          {/* Trend Chart */}
-          {dailyTrend.length > 1 && (
-            <>
-              <SectionLabel>Call Volume + Hot Lead Trend</SectionLabel>
-              <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #E5E7EB',
-                padding: '16px 8px', marginBottom: 8 }}>
-                <ResponsiveContainer width="100%" height={200}>
-                  <BarChart data={dailyTrend} margin={{ top: 4, right: 16, left: -10, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#F3F4F6" />
-                    <XAxis dataKey="label" tick={{ fontSize: 11 }} />
-                    <YAxis yAxisId="left" tick={{ fontSize: 11 }} />
-                    <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} unit="%" />
-                    <Tooltip />
-                    <Legend wrapperStyle={{ fontSize: 11 }} />
-                    <Bar yAxisId="left" dataKey="connected" name="Connected" fill="#93C5FD" radius={[2,2,0,0]} />
-                    <Bar yAxisId="left" dataKey="hotLeads" name="Hot Leads" fill="#16A34A" radius={[2,2,0,0]} />
-                    <Line yAxisId="right" type="monotone" dataKey="connRate" name="Conn Rate %" stroke="#F59E0B" strokeWidth={2} dot={false} />
-                  </BarChart>
-                </ResponsiveContainer>
+        {/* Utilization engagement */}
+        <KpiCard
+          label="Utilization Engagement"
+          value={`${stats.utilizationRate.toFixed(1)}%`}
+          sub={`${stats.utilEngaged} engaged / ${stats.utilConnected} connected`}
+          c={light(stats.utilizationRate, MILESTONES.m2.utilization, MILESTONES.m2.utilization * 0.75)}
+          trend={trendArrow(stats.utilizationRate, prevStats?.utilizationRate)}
+          milestone={mUtil}
+          wide
+        />
+
+        {/* Churn exposure */}
+        <KpiCard
+          label="Churn Exposure"
+          value={stats.churnSignals}
+          sub={`${stats.churnRiskPct.toFixed(1)}% of calls flagged`}
+          c={stats.churnRiskPct < 5 ? 'green' : stats.churnRiskPct < 15 ? 'amber' : 'red'}
+          trend={trendArrow(-stats.churnRiskPct, prevStats ? -prevStats.churnRiskPct : null)}
+        />
+
+        {/* Loan pipeline */}
+        <KpiCard
+          label="Loan Signals"
+          value={stats.loanSignals}
+          sub={`${stats.hotLeads} hot leads`}
+          c={stats.loanSignals > 0 ? 'purple' : 'amber'}
+          trend={trendArrow(stats.loanSignals, prevStats?.loanSignals)}
+        />
+      </div>
+
+      {/* Strategic pace meter */}
+      <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <p className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-4">Progress vs Roadmap Targets</p>
+        <PaceMeter
+          label="Welcome Call Activation Rate"
+          current={stats.activationRate}
+          baseline={BASELINE.activation}
+          targets={{ m2: 27.5, m4: 37.5, m6: 45, m12: 52.5 }}
+        />
+        <PaceMeter
+          label="Utilization Engagement Rate"
+          current={stats.utilizationRate}
+          baseline={BASELINE.utilization}
+          targets={{ m2: 8, m4: 13.5, m6: 18, m12: 23.5 }}
+        />
+      </div>
+
+      {/* ══════════════════════════════════════════
+          L1 — PROCESS HEALTH
+      ══════════════════════════════════════════ */}
+      <SectionHeader icon="⚙️" label="L1 — Process Health" tag="Leading indicators" />
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <KpiCard
+          label="Connection Rate"
+          value={`${stats.connectionRate.toFixed(0)}%`}
+          sub={`${stats.allConnected} / ${stats.total} calls`}
+          c={light(stats.connectionRate, 50, 35)}
+          trend={trendArrow(stats.connectionRate, prevStats?.connectionRate)}
+        />
+        {stats.pitchRate != null && (
+          <KpiCard
+            label="Pitch Completion"
+            value={`${stats.pitchRate.toFixed(0)}%`}
+            sub={`${stats.pitchComplete} / ${stats.pitchScored} scored`}
+            c={light(stats.pitchRate, 60, 40)}
+            trend={trendArrow(stats.pitchRate, prevStats?.pitchRate)}
+          />
+        )}
+        {stats.avgQA != null && (
+          <KpiCard
+            label="Avg QA Score"
+            value={`${stats.avgQA.toFixed(1)}/6`}
+            sub={`${stats.qaRecs} scored calls`}
+            c={light(stats.avgQA, 4.5, 3.5)}
+            trend={trendArrow(stats.avgQA, prevStats?.avgQA)}
+          />
+        )}
+        <KpiCard
+          label="Compliance"
+          value={`${stats.complianceRate.toFixed(0)}%`}
+          sub={stats.violations > 0 ? `${stats.violations} violations` : 'Clean period'}
+          c={light(stats.complianceRate, 97, 90)}
+          trend={trendArrow(stats.complianceRate, prevStats?.complianceRate)}
+        />
+        {stats.callbackHonorRate != null && (
+          <KpiCard
+            label="Callback Honor"
+            value={`${stats.callbackHonorRate.toFixed(0)}%`}
+            sub={`${stats.callbacksDone} / ${stats.callbacksNeeded}`}
+            c={light(stats.callbackHonorRate, 80, 60)}
+            trend={trendArrow(stats.callbackHonorRate, prevStats?.callbackHonorRate)}
+          />
+        )}
+        {stats.avgSentimentDelta != null && (
+          <KpiCard
+            label="Sentiment Uplift"
+            value={stats.avgSentimentDelta > 0 ? `+${stats.avgSentimentDelta.toFixed(2)}` : stats.avgSentimentDelta.toFixed(2)}
+            sub="avg score delta per util call"
+            c={stats.avgSentimentDelta > 0 ? 'green' : stats.avgSentimentDelta > -0.2 ? 'amber' : 'red'}
+            trend={trendArrow(stats.avgSentimentDelta, prevStats?.avgSentimentDelta)}
+          />
+        )}
+        <KpiCard
+          label="Avg Talk Time"
+          value={`${Math.floor(stats.avgTalkTime / 60)}m ${Math.round(stats.avgTalkTime % 60)}s`}
+          sub="connected calls only"
+          c={light(stats.avgTalkTime, 150, 90)}
+          trend={trendArrow(stats.avgTalkTime, prevStats?.avgTalkTime)}
+        />
+        <KpiCard
+          label="Subscribers Reached"
+          value={stats.uniqueSubscribers.toLocaleString()}
+          sub="unique phone numbers"
+          c="blue"
+          trend={trendArrow(stats.uniqueSubscribers, prevStats?.uniqueSubscribers)}
+        />
+      </div>
+
+      {/* ══════════════════════════════════════════
+          ACTIVATION FUNNEL
+      ══════════════════════════════════════════ */}
+      <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <SectionHeader icon="🏆" label="Activation Funnel" tag="Welcome Call" />
+        <FunnelBar label="Total WC Calls"   value={stats.wcTotal}      max={stats.wcTotal} color="bg-gray-400"   />
+        <FunnelBar label="Connected"         value={stats.wcConnected}   max={stats.wcTotal} color="bg-blue-400"
+          pct={stats.wcTotal > 0 ? Math.round(stats.wcConnected / stats.wcTotal * 100) : 0} />
+        <FunnelBar label="Pitch Scored"      value={stats.pitchScored}   max={stats.wcTotal} color="bg-purple-400"
+          pct={stats.wcTotal > 0 ? Math.round(stats.pitchScored / stats.wcTotal * 100) : 0} />
+        <FunnelBar label="Pitch Complete"    value={stats.pitchComplete} max={stats.wcTotal} color="bg-indigo-400"
+          pct={stats.wcTotal > 0 ? Math.round(stats.pitchComplete / stats.wcTotal * 100) : 0} />
+        <FunnelBar label="Activated"         value={stats.activated}     max={stats.wcTotal} color="bg-green-500"
+          pct={stats.wcTotal > 0 ? Math.round(stats.activated / stats.wcTotal * 100) : 0} />
+      </div>
+
+      {/* ══════════════════════════════════════════
+          UTILIZATION FUNNEL
+      ══════════════════════════════════════════ */}
+      <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <SectionHeader icon="💊" label="Utilization Funnel" tag="Existing Subscribers" />
+        <FunnelBar label="Total Util Calls"  value={stats.utilTotal}     max={stats.utilTotal} color="bg-gray-400"   />
+        <FunnelBar label="Connected"         value={stats.utilConnected} max={stats.utilTotal} color="bg-blue-400"
+          pct={stats.utilTotal > 0 ? Math.round(stats.utilConnected / stats.utilTotal * 100) : 0} />
+        <FunnelBar label="Engaged (>2 min)"  value={stats.utilEngaged}   max={stats.utilTotal} color="bg-teal-500"
+          pct={stats.utilTotal > 0 ? Math.round(stats.utilEngaged / stats.utilTotal * 100) : 0} />
+        <FunnelBar label="Loan Signals"      value={stats.loanSignals}   max={stats.utilTotal} color="bg-purple-500"
+          pct={stats.utilTotal > 0 ? Math.round(stats.loanSignals / stats.utilTotal * 100) : 0} />
+        <FunnelBar label="Churn Signals"     value={stats.churnSignals}  max={stats.utilTotal} color="bg-red-400"
+          pct={stats.utilTotal > 0 ? Math.round(stats.churnSignals / stats.utilTotal * 100) : 0} />
+      </div>
+
+      {/* ══════════════════════════════════════════
+          STRATEGIC RISKS
+      ══════════════════════════════════════════ */}
+      <div className="bg-white rounded-xl border border-gray-200 p-4">
+        <SectionHeader icon="⚠️" label="Strategic Risk Signals" />
+        <div className="space-y-2">
+          {stats.activationRate < MILESTONES.m2.activation * 0.75 && (
+            <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+              <span className="text-red-500 font-bold text-sm">●</span>
+              <div>
+                <p className="text-sm font-semibold text-red-700">Activation Rate Below M2 Minimum</p>
+                <p className="text-xs text-red-600">Current {stats.activationRate.toFixed(1)}% vs M2 target {MILESTONES.m2.activation}%. Requires script/training intervention.</p>
               </div>
-            </>
+            </div>
           )}
-
-          {/* Agent Contribution Table */}
-          {agentTable.length > 0 && (
-            <>
-              <SectionLabel>Agent Contribution</SectionLabel>
-              <div style={{ background: '#fff', borderRadius: 10, border: '1px solid #E5E7EB', overflow: 'hidden' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                  <thead>
-                    <tr style={{ background: '#F9FAFB', borderBottom: '1px solid #E5E7EB' }}>
-                      {['Agent', 'Calls', 'Connected', 'Conn %', 'Hot Leads', 'Hot %', 'Churn', 'Talk Time', 'QA Avg'].map(h => (
-                        <th key={h} style={{ padding: '8px 12px', textAlign: 'left', fontSize: 11,
-                          fontWeight: 700, color: '#6B7280', whiteSpace: 'nowrap' }}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {agentTable.map((a, i) => (
-                      <tr key={a.name}
-                        style={{ borderBottom: '1px solid #F3F4F6',
-                          background: i % 2 === 0 ? '#fff' : '#FAFAFA' }}>
-                        <td style={{ padding: '8px 12px', fontWeight: 600 }}>{a.name}</td>
-                        <td style={{ padding: '8px 12px' }}>{a.total}</td>
-                        <td style={{ padding: '8px 12px' }}>{a.connected}</td>
-                        <td style={{ padding: '8px 12px', color: a.connRate >= 45 ? '#16A34A' : a.connRate >= 30 ? '#D97706' : '#DC2626', fontWeight: 600 }}>
-                          {a.connRate}%
-                        </td>
-                        <td style={{ padding: '8px 12px', fontWeight: 700,
-                          color: a.hotLeads > 0 ? '#15803D' : '#374151' }}>
-                          {a.hotLeads}
-                        </td>
-                        <td style={{ padding: '8px 12px', color: a.hotRate >= 5 ? '#16A34A' : a.hotRate >= 2 ? '#D97706' : '#6B7280' }}>
-                          {a.hotRate}%
-                        </td>
-                        <td style={{ padding: '8px 12px',
-                          color: a.churnSignals > 3 ? '#DC2626' : '#374151' }}>
-                          {a.churnSignals}
-                        </td>
-                        <td style={{ padding: '8px 12px' }}>{a.talkTimeHrs}h</td>
-                        <td style={{ padding: '8px 12px',
-                          color: a.qaAvg === null ? '#9CA3AF' : a.qaAvg >= 4.5 ? '#16A34A' : a.qaAvg >= 3 ? '#D97706' : '#DC2626',
-                          fontWeight: a.qaAvg !== null ? 600 : 400 }}>
-                          {a.qaAvg !== null ? `${a.qaAvg}/6` : '—'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+          {stats.utilizationRate < MILESTONES.m2.utilization * 0.75 && (
+            <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+              <span className="text-red-500 font-bold text-sm">●</span>
+              <div>
+                <p className="text-sm font-semibold text-red-700">Utilization Engagement Below M2 Pace</p>
+                <p className="text-xs text-red-600">Current {stats.utilizationRate.toFixed(1)}% vs M2 target {MILESTONES.m2.utilization}%. Review subscriber outreach frequency.</p>
               </div>
-            </>
+            </div>
           )}
+          {stats.complianceRate < 95 && (
+            <div className="flex items-start gap-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <span className="text-yellow-500 font-bold text-sm">●</span>
+              <div>
+                <p className="text-sm font-semibold text-yellow-700">Compliance Below 95% Target</p>
+                <p className="text-xs text-yellow-600">{stats.violations} violations in period. Compliance must be 100% by M4.</p>
+              </div>
+            </div>
+          )}
+          {stats.churnRiskPct > 10 && (
+            <div className="flex items-start gap-2 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+              <span className="text-yellow-500 font-bold text-sm">●</span>
+              <div>
+                <p className="text-sm font-semibold text-yellow-700">High Churn Signal Density</p>
+                <p className="text-xs text-yellow-600">{stats.churnSignals} signals ({stats.churnRiskPct.toFixed(1)}% of calls). Review retention script.</p>
+              </div>
+            </div>
+          )}
+          {stats.activationRate >= MILESTONES.m2.activation && stats.utilizationRate >= MILESTONES.m2.utilization && stats.complianceRate >= 95 && stats.churnRiskPct <= 10 && (
+            <div className="flex items-center gap-2 p-3 bg-green-50 border border-green-200 rounded-lg">
+              <span className="text-green-500 font-bold">✓</span>
+              <p className="text-sm font-semibold text-green-700">No critical risks detected for this period.</p>
+            </div>
+          )}
+        </div>
+      </div>
 
-          {/* Summary insight */}
-          <div style={{ background: '#EFF6FF', borderRadius: 8, padding: '12px 16px',
-            marginTop: 20, fontSize: 13, color: '#1E40AF', lineHeight: 1.6 }}>
-            <strong>Period Summary ({bounds.curr.label}):</strong>&nbsp;
-            {currM.total.toLocaleString()} calls · {currM.connected.toLocaleString()} connected ({currM.connRate}%) ·&nbsp;
-            {currM.hotLeads} hot leads ({currM.hotRate}% rate) ·&nbsp;
-            {currM.churnSignals} churn signals ·&nbsp;
-            {currM.talkTimeHrs}h total talk time
-            {prevM && (
-              <>&nbsp;|&nbsp;
-                vs {bounds.prev.label}: {prevM.total.toLocaleString()} calls, {prevM.hotLeads} hot leads ({prevM.hotRate}%)
-              </>
-            )}
-          </div>
-        </>
-      )}
     </div>
   );
 }

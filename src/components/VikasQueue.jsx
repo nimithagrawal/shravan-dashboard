@@ -1,9 +1,21 @@
 import { useState, useMemo, Fragment } from 'react';
 import { patchRecord } from '../lib/airtable';
-import { qaScore, qaRating, fmtDuration, ratingColor, computeQAFailureReason, isHumanPickup, kpiColor, computeGist, gistColor, subscriberType, subscriberTypeColor, callLabelColor } from '../lib/helpers';
+import { qaScore, qaRating, fmtDuration, ratingColor, computeQAFailureReason, isHumanPickup, kpiColor, computeGist, gistColor, subscriberType, subscriberTypeColor, callLabelColor, computeLeadScore } from '../lib/helpers';
 import { ExpandableSummary, TranscriptViewer } from './SharedUI';
 import PhoneNumber from './PhoneNumber';
 import { useAuth } from '../context/AuthContext';
+
+function AttemptBadge({ count }) {
+  if (!count || count <= 1) return <span className="text-xs text-gray-400">1st</span>;
+  const color = count >= 6 ? 'bg-green-100 text-green-700' : count >= 3 ? 'bg-yellow-100 text-amber' : 'bg-gray-100 text-gray-600';
+  return <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold ${color}`}>#{count}</span>;
+}
+
+function LeadScoreBadge({ score }) {
+  if (score == null) return null;
+  const color = score >= 70 ? 'text-green-700' : score >= 40 ? 'text-amber' : 'text-gray-500';
+  return <span className={`font-mono text-xs font-bold ${color}`}>{score}</span>;
+}
 
 function Chip({ text, className }) {
   return <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${className}`}>{text}</span>;
@@ -81,7 +93,7 @@ function ExpandedRow({ r, colSpan }) {
   );
 }
 
-export default function VikasQueue({ today, openCallbacks = [], onRemove, onRefresh }) {
+export default function VikasQueue({ today, openCallbacks = [], onRemove, onRefresh, attemptMap = {} }) {
   const { canDo } = useAuth();
   const canAction = canDo('canCallbackActions');
   const [expanded, setExpanded] = useState(null);
@@ -370,12 +382,68 @@ export default function VikasQueue({ today, openCallbacks = [], onRemove, onRefr
 
   const QA_LABELS = ['Q1 User Agent Screened', 'Q2 Cashback Correct', 'Q3 WA Link Sent', 'Q4 Hi Attempt Made', 'Q5 Cashback Mechanic Explained', 'Q6 No Improvised Claims'];
 
+  // ── Hero KPIs ──
+  const totalQueue = escalatedCallbacks.length + overdueCallbacks.length + timeSpecificToday.length + softRequestToday.length;
+  const fulfilledToday = useMemo(() => today.filter(r => r['Callback Status'] === 'Fulfilled').length, [today]);
+  const fulfillmentRate = (fulfilledToday + totalQueue) > 0 ? Math.round((fulfilledToday / (fulfilledToday + totalQueue)) * 100) : 0;
+  const dueNowCount = timeSpecificToday.filter(r => {
+    const slot = r['Callback Time Slot'] || r['Callback Time Window'] || '';
+    const hour = new Date().getHours();
+    const slotHour = parseInt(slot);
+    return !isNaN(slotHour) && slotHour <= hour;
+  }).length;
+
+  // Verdict: red if escalated>0 or overdue>5, amber if overdue>0 or fulfillment<50, else green
+  const vikasVerdict = escalatedCallbacks.length > 0 || overdueCallbacks.length > 5 ? 'red'
+    : overdueCallbacks.length > 0 || fulfillmentRate < 50 ? 'amber' : 'green';
+  const vikasVerdictLabel = vikasVerdict === 'green' ? 'Queue Clear' : vikasVerdict === 'amber' ? 'Watch' : 'Action Needed';
+  const vikasVerdictBg = vikasVerdict === 'green' ? 'bg-green-600' : vikasVerdict === 'amber' ? 'bg-yellow-500' : 'bg-red-600';
+
   return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-lg font-bold text-gray-900">Vikas — Action Queue</h2>
-        <p className="text-sm text-gray-500">Welcome Calls + Callbacks + QA Review + Coaching</p>
-        <p className="text-[10px] text-gray-400 mt-0.5">Action queues always show today's data</p>
+    <div className="space-y-4">
+      {/* ═══ VERDICT ═══ */}
+      <div className={`${vikasVerdictBg} text-white rounded-xl px-5 py-3 flex items-center justify-between`}>
+        <div>
+          <p className="text-2xl font-black">{vikasVerdictLabel}</p>
+          <p className="text-xs opacity-80">Vikas Action Queue</p>
+        </div>
+        <div className="flex gap-2">
+          {[
+            escalatedCallbacks.length === 0 ? 'green' : 'red',
+            overdueCallbacks.length === 0 ? 'green' : overdueCallbacks.length <= 5 ? 'amber' : 'red',
+            fulfillmentRate >= 70 ? 'green' : fulfillmentRate >= 40 ? 'amber' : 'red',
+            dueNowCount === 0 ? 'green' : 'amber',
+          ].map((l, i) => <span key={i} className={`w-3 h-3 rounded-full ${l === 'green' ? 'bg-green-300' : l === 'amber' ? 'bg-yellow-300' : 'bg-red-300'}`} />)}
+        </div>
+      </div>
+
+      {/* ═══ HERO KPIs ═══ */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className={`rounded-xl border p-4 ${escalatedCallbacks.length > 0 ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
+          <p className="text-[11px] text-gray-500 uppercase tracking-wide font-medium">Escalated</p>
+          <p className={`text-2xl font-bold ${escalatedCallbacks.length > 0 ? 'text-red-700' : 'text-green-700'}`}>{escalatedCallbacks.length}</p>
+          <p className="text-[10px] text-gray-400">Roll 3+ needs decision</p>
+        </div>
+        <div className={`rounded-xl border p-4 ${overdueCallbacks.length > 5 ? 'bg-red-50 border-red-200' : overdueCallbacks.length > 0 ? 'bg-yellow-50 border-yellow-200' : 'bg-green-50 border-green-200'}`}>
+          <p className="text-[11px] text-gray-500 uppercase tracking-wide font-medium">Overdue</p>
+          <p className={`text-2xl font-bold ${overdueCallbacks.length > 5 ? 'text-red-700' : overdueCallbacks.length > 0 ? 'text-yellow-700' : 'text-green-700'}`}>{overdueCallbacks.length}</p>
+          <p className="text-[10px] text-gray-400">Missed yesterday</p>
+        </div>
+        <div className={`rounded-xl border p-4 ${dueNowCount > 0 ? 'bg-yellow-50 border-yellow-200' : 'bg-green-50 border-green-200'}`}>
+          <p className="text-[11px] text-gray-500 uppercase tracking-wide font-medium">Due Now</p>
+          <p className={`text-2xl font-bold ${dueNowCount > 0 ? 'text-yellow-700' : 'text-green-700'}`}>{dueNowCount}</p>
+          <p className="text-[10px] text-gray-400">{timeSpecificToday.length} time-specific today</p>
+        </div>
+        <div className={`rounded-xl border p-4 ${fulfillmentRate >= 70 ? 'bg-green-50 border-green-200' : fulfillmentRate >= 40 ? 'bg-yellow-50 border-yellow-200' : 'bg-red-50 border-red-200'}`}>
+          <p className="text-[11px] text-gray-500 uppercase tracking-wide font-medium">Fulfilled</p>
+          <p className={`text-2xl font-bold ${fulfillmentRate >= 70 ? 'text-green-700' : fulfillmentRate >= 40 ? 'text-yellow-700' : 'text-red-700'}`}>{fulfillmentRate}%</p>
+          <p className="text-[10px] text-gray-400">{fulfilledToday} done / {fulfilledToday + totalQueue} total</p>
+        </div>
+        <div className="rounded-xl border p-4 bg-gray-50 border-gray-200">
+          <p className="text-[11px] text-gray-500 uppercase tracking-wide font-medium">Total Queue</p>
+          <p className="text-2xl font-bold text-gray-800">{totalQueue}</p>
+          <p className="text-[10px] text-gray-400">+{futureCallbacks.length} future · {uniqueRetryMobiles} retry</p>
+        </div>
       </div>
 
       {/* Q2 Compliance Alert (FIX 7) */}
@@ -531,6 +599,8 @@ export default function VikasQueue({ today, openCallbacks = [], onRemove, onRefr
                   <th className="px-4 py-2">Mobile</th>
                   <th className="px-4 py-2">Agent</th>
                   <th className="px-4 py-2">Original Date</th>
+                  <th className="px-4 py-2">Attempts</th>
+                  <th className="px-4 py-2">Lead Score</th>
                   <th className="px-4 py-2">Label</th>
                   <th className="px-4 py-2 max-w-[200px]">Summary</th>
                   <th className="px-4 py-2"></th>
@@ -539,6 +609,8 @@ export default function VikasQueue({ today, openCallbacks = [], onRemove, onRefr
               <tbody>
                 {timeSpecificToday.map(r => {
                   const key = `ts-${r.id}`;
+                  const attempts = attemptMap[String(r['Mobile Number'] || '')] || 1;
+                  const leadScore = computeLeadScore(r);
                   return (
                     <Fragment key={r.id}>
                       <tr onClick={() => toggle(key)} className="border-b border-gray-50 hover:bg-gray-50 cursor-pointer">
@@ -548,6 +620,8 @@ export default function VikasQueue({ today, openCallbacks = [], onRemove, onRefr
                         <td className="px-4 py-2 whitespace-nowrap text-xs">
                           {r['Call Date'] ? new Date(r['Call Date'] + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) : '--'}
                         </td>
+                        <td className="px-4 py-2"><AttemptBadge count={attempts} /></td>
+                        <td className="px-4 py-2"><LeadScoreBadge score={leadScore} /></td>
                         <td className="px-4 py-2">{r['Call Label'] ? <Chip text={r['Call Label']} className={callLabelColor(r['Call Label'])} /> : <span className="text-gray-300">--</span>}</td>
                         <td className="px-4 py-2 text-xs text-gray-500 max-w-[200px]"><ExpandableSummary text={r['Summary']} /></td>
                         <td className="px-4 py-2" onClick={e => e.stopPropagation()}>
@@ -558,7 +632,7 @@ export default function VikasQueue({ today, openCallbacks = [], onRemove, onRefr
                           )}
                         </td>
                       </tr>
-                      {expanded === key && <ExpandedRow r={r} colSpan={7} />}
+                      {expanded === key && <ExpandedRow r={r} colSpan={9} />}
                     </Fragment>
                   );
                 })}

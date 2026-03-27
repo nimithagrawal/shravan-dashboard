@@ -1,7 +1,14 @@
 import { useState, useRef, useCallback } from 'react';
 import { maskPhone } from '../lib/helpers';
 
-const PIN = '0504';
+// SHA-256 of "0504" — PIN is never stored in plaintext in the bundle
+const PIN_HASH = '9514bda5f1da3a11c1ec2b4d40252bcc327a89cc4cc0f01f673048a551333d08';
+
+async function hashPin(pin) {
+  const data = new TextEncoder().encode(pin);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
 export default function PhoneNumber({ number, className = '' }) {
   const [revealed, setRevealed] = useState(false);
@@ -24,9 +31,10 @@ export default function PhoneNumber({ number, className = '' }) {
     setTimeout(() => inputRef.current?.focus(), 50);
   };
 
-  const handlePinSubmit = (e) => {
+  const handlePinSubmit = async (e) => {
     e.preventDefault();
-    if (pin === PIN) {
+    const entered = await hashPin(pin);
+    if (entered === PIN_HASH) {
       reveal();
     } else {
       setPin('');

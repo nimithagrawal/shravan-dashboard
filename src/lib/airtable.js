@@ -14,11 +14,13 @@ const DIRECT_HEADERS = PAT ? { Authorization: `Bearer ${PAT}` } : {};
 
 // Table alias → direct Airtable table ID (for fallback mode)
 const TABLE_IDS = {
-  calls: import.meta.env.VITE_AIRTABLE_TABLE,
-  coaching: import.meta.env.VITE_AIRTABLE_COACHING_TABLE,
-  pitch_versions: import.meta.env.VITE_AIRTABLE_PITCH_VERSIONS_TABLE,
+  calls:             import.meta.env.VITE_AIRTABLE_TABLE,
+  coaching:          import.meta.env.VITE_AIRTABLE_COACHING_TABLE,
+  pitch_versions:    import.meta.env.VITE_AIRTABLE_PITCH_VERSIONS_TABLE,
   pitch_suggestions: import.meta.env.VITE_AIRTABLE_PITCH_SUGGESTIONS_TABLE,
-  users: import.meta.env.VITE_AIRTABLE_USERS_TABLE,
+  users:             import.meta.env.VITE_AIRTABLE_USERS_TABLE,
+  family_health:     import.meta.env.VITE_AIRTABLE_FAMILY_HEALTH_TABLE || 'tblsqr0zMaE4zSRlA',
+  team_config:       import.meta.env.VITE_AIRTABLE_TEAM_CONFIG_TABLE   || '',
 };
 
 // Field ID → stable camelCase alias (resilient to renames)
@@ -323,6 +325,87 @@ export async function updateSuggestionStatus(recordId, status, nimithNotes) {
   });
 }
 
+// ── Family Health Profiles ──
+
+export async function fetchFamilyHealthProfiles() {
+  const cached = getCached('family_health', CACHE_TTL_HISTORICAL);
+  if (cached) return cached;
+  let data;
+  if (USE_PROXY) {
+    const result = await proxyFetch('family_health', { formula: '' });
+    data = (result.records || []).map(r => ({ id: r.id, ...r.fields }));
+  } else {
+    const records = await directFetchAll('family_health', '');
+    data = records.map(r => ({ id: r.id, ...r }));
+  }
+  setCache('family_health', data);
+  return data;
+}
+
+// ── Team Config (dynamic head → agents mapping) ──
+// Falls back to a hard-coded default if no table is configured.
+
+const DEFAULT_TEAM_CONFIG = [
+  {
+    headName:   'Vikas',
+    department: 'Welcome Call',
+    callTypes:  ['Welcome Call', 'Callback'],
+    agents:     [], // populated dynamically from coaching data or Airtable
+  },
+  {
+    headName:   'Samir',
+    department: 'Utilization',
+    callTypes:  ['Utilization', 'Callback'],
+    agents:     [],
+  },
+];
+
+export async function fetchTeamConfig() {
+  const cached = getCached('team_config', CACHE_TTL_HISTORICAL);
+  if (cached) return cached;
+
+  // If no team config table is configured, return the default
+  if (!TABLE_IDS.team_config) {
+    setCache('team_config', DEFAULT_TEAM_CONFIG);
+    return DEFAULT_TEAM_CONFIG;
+  }
+
+  let data;
+  try {
+    if (USE_PROXY) {
+      const result = await proxyFetch('team_config', { formula: '' });
+      data = (result.records || []).map(r => ({ id: r.id, ...r.fields }));
+    } else {
+      const records = await directFetchAll('team_config', '');
+      data = records.map(r => ({ id: r.id, ...r }));
+    }
+    // Normalise to { headName, department, callTypes[], agents[] }
+    const config = data.map(r => ({
+      id:         r.id,
+      headName:   r['Head Name']   || '',
+      department: r['Department']  || '',
+      callTypes:  (r['Call Types'] || '').split(',').map(s => s.trim()).filter(Boolean),
+      agents:     (r['Agents']     || '').split(',').map(s => s.trim()).filter(Boolean),
+      active:     r['Active'] !== false,
+    })).filter(t => t.active && t.headName);
+    setCache('team_config', config);
+    return config;
+  } catch (e) {
+    console.warn('Team config fetch failed, using defaults:', e.message);
+    setCache('team_config', DEFAULT_TEAM_CONFIG);
+    return DEFAULT_TEAM_CONFIG;
+  }
+}
+
+export async function patchTeamConfig(recordId, fields) {
+  if (USE_PROXY) {
+    await proxyFetch('team_config', { action: 'patch', records: [{ id: recordId, fields }] });
+  } else {
+    await directPatch('team_config', [{ id: recordId, fields }]);
+  }
+  delete _cache['team_config']; // invalidate cache after write
+}
+
 export async function approveAndCreateVersion(suggestionId, currentVersionId, suggestion) {
   // 1. Mark old version as Superseded
   const allVersions = await fetchAllPitchVersions();
@@ -383,39 +466,4 @@ export async function approveAndCreateVersion(suggestionId, currentVersionId, su
   }
 
   return newVersionId;
-}
-
-// ── Team Config ──
-
-export async function fetchTeamConfig() {
-  const cached = getCached('team_config', 60 * 60 * 1000);
-  if (cached) return cached;
-  try {
-    if (USE_PROXY) {
-      const result = await proxyFetch('users', { formula: '{Active} = TRUE()' });
-      const config = (result.records || []).map(r => {
-        const f = r.fields || r;
-        return { id: r.id, name: f['Name'] || '', role: f['Role'] || 'AGENT', agentNameMatch: f['Agent Name Match'] || '', department: f['Department'] || '' };
-      });
-      setCache('team_config', config);
-      return config;
-    }
-    const tableId = TABLE_IDS.users;
-    const url = `https://api.airtable.com/v0/${BASE}/${tableId}`;
-    const params = new URLSearchParams();
-    params.set('filterByFormula', '{Active} = TRUE()');
-    params.set('maxRecords', '100');
-    const res = await fetch(`${url}?${params}`, { headers: DIRECT_HEADERS });
-    if (!res.ok) return [];
-    const data = await res.json();
-    const config = (data.records || []).map(r => ({
-      id: r.id, name: r.fields['Name'] || '', role: r.fields['Role'] || 'AGENT',
-      agentNameMatch: r.fields['Agent Name Match'] || '', department: r.fields['Department'] || '',
-    }));
-    setCache('team_config', config);
-    return config;
-  } catch (e) {
-    console.error('fetchTeamConfig error:', e);
-    return [];
-  }
 }
