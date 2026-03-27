@@ -8,7 +8,13 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const token = new URLSearchParams(window.location.search).get('token');
+    // Read token from URL first, fall back to sessionStorage
+    const urlToken = new URLSearchParams(window.location.search).get('token');
+    const token = urlToken || sessionStorage.getItem('shravan_auth_token');
+
+    // Persist new URL token to sessionStorage
+    if (urlToken) sessionStorage.setItem('shravan_auth_token', urlToken);
+
     resolveUser(token).then(resolved => {
       setUser(resolved || false);
       setLoading(false);

@@ -1,31 +1,53 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { fetchTodayWithProgress, fetchRecordsForPeriod, fetchOpenCallbacks, fetchHotLeads, fetchLoanSignals, fetchChurnSignals, fetchCallbacksRequested, fetchTransactionIntents, fetchTodayCoaching, invalidateCache, getLastScrapedTime } from './lib/airtable';
-import { scrapeAgeStatus, getPeriodDates, getPreviousPeriodDates, getComparisonPeriods, formatPeriodLabel } from './lib/helpers';
+import { scrapeAgeStatus, getPeriodDates, getPreviousPeriodDates, getComparisonPeriods, formatPeriodLabel, isConnectedCall } from './lib/helpers';
+import CommandCenter from './components/CommandCenter';
 import Overview from './components/Overview';
 import VikasQueue from './components/VikasQueue';
 import SamirQueue from './components/SamirQueue';
 import AgentReview from './components/AgentReview';
 import PitchPerformance from './components/PitchPerformance';
+import ExecutiveDashboard from './components/ExecutiveDashboard';
 import AccessDenied from './components/AccessDenied';
 import { useAuth } from './context/AuthContext';
 
-const ALL_TABS = ['Overview', 'Vikas Queue', 'Samir Queue', 'Agent Review', 'Pitch Performance'];
-const ALL_ICONS = ['\u{1F4CA}', '\u{1F4CB}', '\u{1F3AF}', '\u{1F468}\u{200D}\u{1F3EB}', '\u{1F3A4}'];
-const PERIODS = [
-  { key: 'today', label: 'Today' },
-  { key: 'yesterday', label: 'Yesterday' },
-  { key: 'week', label: 'This Week' },
-  { key: 'lastweek', label: 'Last Week' },
-  { key: 'mtd', label: 'MTD' },
-  { key: 'lastmonth', label: 'Last Month' },
-  { key: 'custom', label: 'Custom' },
+const ALL_TABS = [
+  'Command Center',
+  'Welcome Call',
+  'Utilization',
+  'Welcome Queue',
+  'Util Queue',
+  'Agent 360',
+  'Pitch Lab',
+  'Call Log',
+  'Executive',
 ];
+
+const ALL_ICONS = ['🏠', '📞', '⚙️', '📋', '🎯', '👨‍🏫', '🎤', '📜', '📈'];
+
+const PERIODS = [
+  { key: 'today',     label: 'Today' },
+  { key: 'yesterday', label: 'Yesterday' },
+  { key: 'week',      label: 'This Week' },
+  { key: 'lastweek',  label: 'Last Week' },
+  { key: 'mtd',       label: 'MTD' },
+  { key: 'lastmonth', label: 'Last Month' },
+  { key: 'custom',    label: 'Custom' },
+];
+
+// Tabs that have a period selector
+const PERIOD_TABS = new Set(['Welcome Call', 'Utilization', 'Call Log']);
+// Tabs that need coaching data
+const COACHING_TABS = new Set(['Command Center', 'Agent 360']);
 
 export default function App() {
   const { user, loading: authLoading, canSeeTab, vikasAlert } = useAuth();
 
   const [tab, setTab] = useState(0);
-  const [data, setData] = useState({ today: [], openCallbacks: [], hotLeads: [], loans: [], churn: [], callbacksRequested: [], transactionIntents: [] });
+  const [data, setData] = useState({
+    today: [], openCallbacks: [], hotLeads: [], loans: [],
+    churn: [], callbacksRequested: [], transactionIntents: [],
+  });
   const [loading, setLoading] = useState(true);
   const [loadProgress, setLoadProgress] = useState(0);
   const [lastRefresh, setLastRefresh] = useState(null);
@@ -48,11 +70,9 @@ export default function App() {
 
   // Build visible tabs based on role
   const visibleTabs = ALL_TABS.filter(t => canSeeTab(t));
-
-  // Map visible tab index → actual tab name
   const currentTabName = visibleTabs[tab] || visibleTabs[0];
 
-  // Always fetch today's data + action queues (for Vikas/Samir tabs)
+  // Always fetch today's data
   const refresh = useCallback(async (force = false) => {
     try {
       if (force) invalidateCache();
@@ -67,10 +87,7 @@ export default function App() {
       setData({ today, openCallbacks, hotLeads, loans, churn, callbacksRequested, transactionIntents });
       setLastRefresh(new Date());
       setLastScraped(getLastScrapedTime(today));
-      // If period is "today", use the same data
-      if (selectedPeriod === 'today') {
-        setPeriodRecords(today);
-      }
+      if (selectedPeriod === 'today') setPeriodRecords(today);
     } catch (e) {
       console.error('Fetch error:', e);
     } finally {
@@ -79,20 +96,18 @@ export default function App() {
   }, [selectedPeriod]);
 
   useEffect(() => {
-    if (!user) return; // Don't fetch until auth resolves
+    if (!user) return;
     refresh();
-    const id = setInterval(refresh, 300000); // 5 min
+    const id = setInterval(refresh, 300000);
     return () => clearInterval(id);
   }, [refresh, user]);
 
-  // Fetch period data when period changes
+  // Period data fetch
   const fetchPeriodData = useCallback(async (period, cs, ce) => {
     const { start, end } = getPeriodDates(period, cs, ce);
     if (period === 'today') {
-      // Already handled by refresh()
       setPeriodRecords(data.today);
       setPrevPeriodRecords([]);
-      // Fetch daily/weekly/monthly comparisons in parallel
       const cmp = getComparisonPeriods();
       try {
         const [dailyData, weeklyData, monthlyData] = await Promise.all([
@@ -100,7 +115,7 @@ export default function App() {
           fetchRecordsForPeriod(cmp.weekly.start, cmp.weekly.end).catch(() => []),
           fetchRecordsForPeriod(cmp.monthly.start, cmp.monthly.end).catch(() => []),
         ]);
-        setPrevPeriodRecords(dailyData); // backwards compat
+        setPrevPeriodRecords(dailyData);
         setComparisonData({ daily: dailyData, weekly: weeklyData, monthly: monthlyData });
       } catch (e) { console.error('Comparison fetch error:', e); }
       return;
@@ -110,9 +125,7 @@ export default function App() {
     try {
       const [records, prevRecords] = await Promise.all([
         fetchRecordsForPeriod(start, end, ({ loaded }) => setPeriodProgress(loaded)),
-        fetchRecordsForPeriod(
-          ...Object.values(getPreviousPeriodDates(start, end))
-        ).catch(() => []),
+        fetchRecordsForPeriod(...Object.values(getPreviousPeriodDates(start, end))).catch(() => []),
       ]);
       setPeriodRecords(records);
       setPrevPeriodRecords(prevRecords);
@@ -124,20 +137,18 @@ export default function App() {
   }, [data.today]);
 
   useEffect(() => {
-    if (!loading && user) {
-      fetchPeriodData(selectedPeriod, customStart, customEnd);
-    }
+    if (!loading && user) fetchPeriodData(selectedPeriod, customStart, customEnd);
   }, [selectedPeriod, customStart, customEnd, loading, fetchPeriodData, user]);
 
-  // Lazy-fetch coaching data when Agent Review tab is active
+  // Lazy-fetch coaching data
   useEffect(() => {
-    if (currentTabName !== 'Agent Review') return;
+    if (!COACHING_TABS.has(currentTabName)) return;
     let cancelled = false;
     const fetchCoaching = async () => {
       setCoachingLoading(true);
       try {
-        const data = await fetchTodayCoaching();
-        if (!cancelled) setCoachingData(data);
+        const d = await fetchTodayCoaching();
+        if (!cancelled) setCoachingData(d);
       } catch (e) {
         console.error('Coaching fetch error:', e);
       } finally {
@@ -145,7 +156,6 @@ export default function App() {
       }
     };
     fetchCoaching();
-    // Auto-refresh every 10 min during calling hours (9AM-8PM IST)
     const id = setInterval(() => {
       const istHour = new Date(Date.now() + 5.5 * 3600000).getUTCHours();
       if (istHour >= 9 && istHour < 20) fetchCoaching();
@@ -162,6 +172,30 @@ export default function App() {
     setData(prev => ({ ...prev, [key]: prev[key].filter(r => r.id !== recordId) }));
   };
 
+  // Filter period records by category for Welcome Call / Utilization tabs
+  const welcomeRecords = useMemo(() =>
+    periodRecords.filter(r => r['callCategory'] === 'Welcome-Call'),
+    [periodRecords]
+  );
+  const utilRecords = useMemo(() =>
+    periodRecords.filter(r =>
+      r['callCategory'] === 'Outbound-Service-Followup' ||
+      r['callCategory'] === 'Outbound-Agent-Reachout'
+    ),
+    [periodRecords]
+  );
+  const prevWelcomeRecords = useMemo(() =>
+    prevPeriodRecords.filter(r => r['callCategory'] === 'Welcome-Call'),
+    [prevPeriodRecords]
+  );
+  const prevUtilRecords = useMemo(() =>
+    prevPeriodRecords.filter(r =>
+      r['callCategory'] === 'Outbound-Service-Followup' ||
+      r['callCategory'] === 'Outbound-Agent-Reachout'
+    ),
+    [prevPeriodRecords]
+  );
+
   // ── Auth gates ──
   if (authLoading) {
     return (
@@ -174,6 +208,14 @@ export default function App() {
 
   const scrapeAge = scrapeAgeStatus(lastScraped);
   const { start: periodStart, end: periodEnd } = getPeriodDates(selectedPeriod, customStart, customEnd);
+  const showPeriodSelector = PERIOD_TABS.has(currentTabName);
+
+  const LoadingBlock = ({ progress }) => (
+    <div className="text-center py-20 text-gray-400">
+      <p className="text-lg">Loading calls...</p>
+      {progress > 0 && <p className="mt-2 font-mono text-sm">{progress.toLocaleString()} records</p>}
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-bg pb-16 md:pb-0">
@@ -186,11 +228,7 @@ export default function App() {
                 Scraped {scrapeAge.label}
               </span>
             )}
-            <button
-              onClick={() => refresh(true)}
-              className="text-xs text-info hover:underline"
-              title="Force refresh (bypass cache)"
-            >
+            <button onClick={() => refresh(true)} className="text-xs text-info hover:underline">
               Refresh
             </button>
             <span className="flex items-center gap-1">
@@ -205,27 +243,27 @@ export default function App() {
         </div>
       </header>
 
-      {/* Vikas alert banner — only for vikasAlert users */}
+      {/* Vikas alert banner */}
       {vikasAlert && data.today.length > 0 && (() => {
         const critAgents = coachingData.filter(a => a['Alert Level'] === 'CRITICAL' && (a['Connected Calls'] || 0) >= 3);
         if (critAgents.length === 0) return null;
         return (
           <div className="bg-red-50 border-b border-red-200 px-4 py-2">
             <p className="max-w-7xl mx-auto text-xs text-red-800 font-semibold">
-              &#x26A0;&#xFE0F; Action Required: {critAgents.map(a => a['Agent Name']).join(', ')} — CRITICAL status. Intervene before next shift.
+              ⚠️ Action Required: {critAgents.map(a => a['Agent Name']).join(', ')} — CRITICAL status.
             </p>
           </div>
         );
       })()}
 
-      {/* Desktop top tabs — only visible tabs */}
-      <nav className="hidden md:block sticky top-[53px] z-40 bg-white border-b border-gray-200">
+      {/* Desktop tabs */}
+      <nav className="hidden md:block sticky top-[53px] z-40 bg-white border-b border-gray-200 overflow-x-auto">
         <div className="max-w-7xl mx-auto flex">
           {visibleTabs.map((t, i) => (
             <button
               key={t}
               onClick={() => { setTab(i); setAgentFilter(null); }}
-              className={`flex-1 py-3 text-sm font-medium border-b-2 transition-colors ${
+              className={`px-4 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
                 tab === i ? 'border-info text-info' : 'border-transparent text-gray-500 hover:text-gray-700'
               }`}
             >
@@ -235,8 +273,8 @@ export default function App() {
         </div>
       </nav>
 
-      {/* Period selector — Overview tab only */}
-      {currentTabName === 'Overview' && !loading && (
+      {/* Period selector */}
+      {showPeriodSelector && !loading && (
         <div className="bg-white border-b border-gray-200">
           <div className="max-w-7xl mx-auto px-4 py-2">
             <div className="flex flex-wrap items-center gap-1.5">
@@ -245,9 +283,7 @@ export default function App() {
                   key={p.key}
                   onClick={() => handlePeriodChange(p.key)}
                   className={`px-3 py-1.5 text-xs font-medium rounded-full transition-colors ${
-                    selectedPeriod === p.key
-                      ? 'bg-info text-white'
-                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                    selectedPeriod === p.key ? 'bg-info text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
                   }`}
                 >
                   {p.label}
@@ -255,23 +291,16 @@ export default function App() {
               ))}
               {selectedPeriod === 'custom' && (
                 <div className="flex items-center gap-1.5 ml-2">
-                  <input
-                    type="date"
-                    value={customStart}
-                    onChange={(e) => setCustomStart(e.target.value)}
-                    className="px-2 py-1 text-xs border border-gray-200 rounded-lg"
-                  />
+                  <input type="date" value={customStart}
+                    onChange={e => setCustomStart(e.target.value)}
+                    className="px-2 py-1 text-xs border border-gray-200 rounded-lg" />
                   <span className="text-xs text-gray-400">to</span>
-                  <input
-                    type="date"
-                    value={customEnd}
-                    onChange={(e) => setCustomEnd(e.target.value)}
-                    className="px-2 py-1 text-xs border border-gray-200 rounded-lg"
-                  />
+                  <input type="date" value={customEnd}
+                    onChange={e => setCustomEnd(e.target.value)}
+                    className="px-2 py-1 text-xs border border-gray-200 rounded-lg" />
                 </div>
               )}
             </div>
-            {/* Period label + count */}
             {selectedPeriod !== 'today' && (
               <p className="text-xs text-gray-500 mt-1">
                 {formatPeriodLabel(periodStart, periodEnd)}
@@ -284,19 +313,71 @@ export default function App() {
 
       <main className="max-w-7xl mx-auto px-4 py-4">
         {loading ? (
-          <div className="text-center py-20 text-gray-400">
-            <p className="text-lg">Loading calls...</p>
-            {loadProgress > 0 && <p className="mt-2 font-mono text-sm">{loadProgress} records</p>}
-          </div>
+          <LoadingBlock progress={loadProgress} />
         ) : (
           <>
-            {currentTabName === 'Overview' && (
-              periodLoading ? (
+            {currentTabName === 'Command Center' && (
+              <CommandCenter today={data.today} coachingData={coachingData} />
+            )}
+
+            {currentTabName === 'Welcome Call' && (
+              periodLoading ? <LoadingBlock progress={periodProgress} /> : (
+                <Overview
+                  records={welcomeRecords}
+                  prevRecords={prevWelcomeRecords}
+                  comparisonData={comparisonData}
+                  period={selectedPeriod}
+                  periodStart={periodStart}
+                  periodEnd={periodEnd}
+                  agentFilter={agentFilter}
+                  setAgentFilter={setAgentFilter}
+                  onRefresh={() => refresh(true)}
+                />
+              )
+            )}
+
+            {currentTabName === 'Utilization' && (
+              periodLoading ? <LoadingBlock progress={periodProgress} /> : (
+                <Overview
+                  records={utilRecords}
+                  prevRecords={prevUtilRecords}
+                  comparisonData={comparisonData}
+                  period={selectedPeriod}
+                  periodStart={periodStart}
+                  periodEnd={periodEnd}
+                  agentFilter={agentFilter}
+                  setAgentFilter={setAgentFilter}
+                  onRefresh={() => refresh(true)}
+                />
+              )
+            )}
+
+            {currentTabName === 'Welcome Queue' && (
+              <VikasQueue today={data.today} openCallbacks={data.openCallbacks}
+                onRemove={removeRecord} onRefresh={refresh} />
+            )}
+
+            {currentTabName === 'Util Queue' && (
+              <SamirQueue today={data.today} hotLeads={data.hotLeads} loans={data.loans}
+                churn={data.churn} callbacksRequested={data.callbacksRequested}
+                transactionIntents={data.transactionIntents}
+                onRemove={removeRecord} onRefresh={refresh} />
+            )}
+
+            {currentTabName === 'Agent 360' && (
+              coachingLoading ? (
                 <div className="text-center py-20 text-gray-400">
-                  <p className="text-lg">Loading calls...</p>
-                  {periodProgress > 0 && <p className="mt-2 font-mono text-sm">{periodProgress.toLocaleString()} records</p>}
+                  <p className="text-lg">Loading coaching data...</p>
                 </div>
               ) : (
+                <AgentReview data={coachingData} />
+              )
+            )}
+
+            {currentTabName === 'Pitch Lab' && <PitchPerformance />}
+
+            {currentTabName === 'Call Log' && (
+              periodLoading ? <LoadingBlock progress={periodProgress} /> : (
                 <Overview
                   records={periodRecords}
                   prevRecords={prevPeriodRecords}
@@ -310,37 +391,27 @@ export default function App() {
                 />
               )
             )}
-            {currentTabName === 'Vikas Queue' && <VikasQueue today={data.today} openCallbacks={data.openCallbacks} onRemove={removeRecord} onRefresh={refresh} />}
-            {currentTabName === 'Samir Queue' && <SamirQueue today={data.today} hotLeads={data.hotLeads} loans={data.loans} churn={data.churn} callbacksRequested={data.callbacksRequested} transactionIntents={data.transactionIntents} onRemove={removeRecord} onRefresh={refresh} />}
-            {currentTabName === 'Agent Review' && (
-              coachingLoading ? (
-                <div className="text-center py-20 text-gray-400">
-                  <p className="text-lg">Loading coaching data...</p>
-                </div>
-              ) : (
-                <AgentReview data={coachingData} />
-              )
-            )}
-            {currentTabName === 'Pitch Performance' && <PitchPerformance />}
+
+            {currentTabName === 'Executive' && <ExecutiveDashboard />}
           </>
         )}
       </main>
 
-      {/* Mobile bottom tab bar — only visible tabs */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-white border-t border-gray-200 safe-area-bottom">
+      {/* Mobile bottom nav */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-white border-t border-gray-200 safe-area-bottom overflow-x-auto">
         <div className="flex">
           {visibleTabs.map((t, i) => {
-            const icon = ALL_ICONS[ALL_TABS.indexOf(t)];
+            const icon = ALL_ICONS[ALL_TABS.indexOf(t)] || '•';
             return (
               <button
                 key={t}
                 onClick={() => { setTab(i); setAgentFilter(null); }}
-                className={`flex-1 py-2 flex flex-col items-center gap-0.5 text-xs font-medium transition-colors ${
+                className={`flex-1 py-2 flex flex-col items-center gap-0.5 text-xs font-medium transition-colors min-w-[60px] ${
                   tab === i ? 'text-info' : 'text-gray-400'
                 }`}
               >
                 <span className="text-lg">{icon}</span>
-                {t}
+                <span className="truncate w-full text-center">{t.split(' ')[0]}</span>
               </button>
             );
           })}

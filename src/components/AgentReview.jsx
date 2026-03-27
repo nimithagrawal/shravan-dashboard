@@ -25,6 +25,60 @@ const Q_LABELS = {
   Q6: 'No Improvised Claims',
 };
 
+const Q_COACHING_TIPS = {
+  Q1: 'Always screen the agent before pitching — ask "Are you using the plan yourself?"',
+  Q2: 'State the exact cashback amount and month clearly before moving on.',
+  Q3: 'Send the WhatsApp Hi link on every completed call, even if they say they\'ll activate later.',
+  Q4: 'Attempt the Hi-message send during the call, not after — improves same-day activation.',
+  Q5: 'Walk through the full cashback mechanic: spend ₹1 → get ₹50 back each month.',
+  Q6: 'Stick to the approved script. No improvised claims about extra benefits or guarantees.',
+};
+
+function generateAutoRecommendation(f) {
+  const alertLevel = f['Alert Level'] || 'OK';
+  const topMiss = f['Top Miss'] || '';
+  const trend = f['Trend'] || '';
+  const intradayAlert = f['Intraday Alert'] || '';
+  const qaAvg = f['QA Score Today'] || 0;
+
+  const qs = {
+    Q1: f['Q1 Pass Pct'], Q2: f['Q2 Pass Pct'], Q3: f['Q3 Pass Pct'],
+    Q4: f['Q4 Pass Pct'], Q5: f['Q5 Pass Pct'], Q6: f['Q6 Pass Pct'],
+  };
+
+  const failing = Object.entries(qs)
+    .filter(([, pct]) => pct !== null && pct !== undefined && pct < 60)
+    .sort((a, b) => a[1] - b[1]);
+
+  const lines = [];
+
+  if (alertLevel === 'CRITICAL') {
+    lines.push('⚠️ CRITICAL: Immediate coaching intervention needed before next shift.');
+  } else if (alertLevel === 'WARNING') {
+    lines.push('⚠️ WARNING: Performance below target — review today\'s calls.');
+  } else if (trend === 'Improving') {
+    lines.push('📈 Good progress! Keep reinforcing what\'s working.');
+  }
+
+  if (failing.length > 0) {
+    lines.push('\nFocus Areas (below 60%):');
+    failing.slice(0, 3).forEach(([q, pct]) => {
+      lines.push(`• ${q} – ${Q_LABELS[q]}: ${pct}%  →  ${Q_COACHING_TIPS[q]}`);
+    });
+  } else if (qaAvg >= 5) {
+    lines.push('\n✅ Strong QA performance across all checkpoints.');
+  }
+
+  const topMissQ = topMiss.match(/Q\d/)?.[0];
+  if (topMissQ && Q_COACHING_TIPS[topMissQ] && !failing.find(([q]) => q === topMissQ)) {
+    lines.push(`\nTop Miss: ${Q_LABELS[topMissQ]} — ${Q_COACHING_TIPS[topMissQ]}`);
+  }
+
+  if (intradayAlert) lines.push(`\n📋 ${intradayAlert}`);
+
+  return lines.join('\n') || `QA avg ${qaAvg}/6 today. Review Q-bar scores above for focus areas.`;
+}
+
 function isAfter610PM() {
   const now = new Date(Date.now() + 5.5 * 3600000);
   const h = now.getUTCHours();
@@ -81,8 +135,9 @@ function AgentCard({ record, isAgent }) {
   const agentName = f['Agent Name'] || '';
 
   const trendIcon = TREND_ICONS[trend] || '';
-  const isBriefAvailable = coachingBrief.length > 0;
   const after610 = isAfter610PM();
+  const effectiveBrief = coachingBrief || (after610 ? generateAutoRecommendation(f) : '');
+  const isBriefAvailable = effectiveBrief.length > 0;
   const topMissLabel = topMiss.match(/Q\d/)?.[0];
 
   const qFields = [
@@ -241,8 +296,13 @@ function AgentCard({ record, isAgent }) {
       {expanded && isBriefAvailable && (
         <div style={{ marginTop: 12, padding: 12, background: '#F9FAFB',
           borderRadius: 6, borderLeft: '3px solid #1D4ED8' }}>
+          {!coachingBrief && (
+            <div style={{ fontSize: 11, color: '#9CA3AF', marginBottom: 6, fontStyle: 'italic' }}>
+              Auto-generated from QA data (scraper brief not yet available)
+            </div>
+          )}
           <div style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 10 }}>
-            {coachingBrief}
+            {effectiveBrief}
           </div>
           {actionPoints && (
             <div style={{ marginBottom: 8 }}>

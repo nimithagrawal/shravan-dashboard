@@ -5,10 +5,12 @@ const AIRTABLE_USERS_URL = `https://api.airtable.com/v0/${BASE}/${USERS_TABLE}`;
 
 // Tab permissions per role
 export const TAB_PERMISSIONS = {
-  ADMIN:   ['Overview', 'Vikas Queue', 'Samir Queue', 'Agent Review', 'Pitch Performance'],
-  MANAGER: ['Overview', 'Vikas Queue', 'Samir Queue', 'Agent Review', 'Pitch Performance'],
-  CX:      ['Samir Queue'],
-  AGENT:   ['Agent Review'],
+  ADMIN:           ['Command Center', 'Welcome Call', 'Utilization', 'Welcome Queue', 'Util Queue', 'Agent 360', 'Pitch Lab', 'Call Log', 'Executive'],
+  MANAGER:         ['Command Center', 'Welcome Call', 'Utilization', 'Welcome Queue', 'Util Queue', 'Agent 360', 'Pitch Lab', 'Call Log', 'Executive'],
+  MANAGER_WELCOME: ['Command Center', 'Welcome Call', 'Welcome Queue', 'Agent 360'],
+  MANAGER_UTIL:    ['Command Center', 'Utilization', 'Util Queue', 'Agent 360'],
+  CX:              ['Util Queue'],
+  AGENT:           ['Agent 360'],
 };
 
 // Action permissions per role
@@ -19,8 +21,20 @@ export const ACTION_PERMISSIONS = {
   AGENT:   { canWrite: false, canInitiateOutreach: false, canCallbackActions: false },
 };
 
+// Role display names for bypass mode
+const ROLE_NAMES = { ADMIN: 'Admin', MANAGER: 'Manager', CX: 'CX Agent', AGENT: 'Agent' };
+
 export async function resolveUser(token) {
   if (!token) return null;
+
+  // Dev bypass: ?token=role:ADMIN skips Airtable lookup
+  if (token.startsWith('role:')) {
+    const role = token.slice(5).toUpperCase();
+    if (TAB_PERMISSIONS[role]) {
+      return { name: ROLE_NAMES[role] || role, role, agentNameMatch: '', vikasAlert: false };
+    }
+    return null;
+  }
 
   try {
     const params = new URLSearchParams();
