@@ -1,1052 +1,366 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
-import IntradayProgress from './IntradayProgress';
-import AgentCallbackBriefing from './AgentCallbackBriefing';
-import PostActivationWasteAlert from './PostActivationWasteAlert';
 import { fetchTodaySnapshots } from '../lib/snapshots';
-import { computeCallbackHonorStats, getPeriodDates, isWelcomeCallRecord, isUtilizationRecord } from '../lib/helpers';
 import { fetchRecordsForPeriod } from '../lib/airtable';
+import {
+  computeCallbackHonorStats, isConnectedCall, fmtTalkTime,
+  isWelcomeCallRecord, isUtilizationRecord, getPeriodDates,
+  dnpPersistenceColor, callbackHonorColor,
+} from '../lib/helpers';
 import {
   RadarChart, PolarGrid, PolarAngleAxis, Radar,
   ResponsiveContainer, Tooltip as ReTooltip,
 } from 'recharts';
 
-// ─────────────────────────── constants ───────────────────────────
+const G = '#10b981', A = '#f59e0b', R = '#ef4444', B = '#3b82f6', TEAL = '#0d9488', GRAY = '#9ca3af';
+function pct(n, d) { return d > 0 ? Math.round((n / d) * 100) : 0; }
+function tl(v, g, a) { return v >= g ? G : v >= a ? A : R; }
 
-const ALERT_COLORS = {
-  CRITICAL: '#DC2626', WARNING: '#D97706', WATCH: '#EA580C', OK: '#16A34A',
-};
-const ALERT_ORDER = { CRITICAL: 0, WARNING: 1, WATCH: 2, OK: 3 };
-const TREND_ICONS = { Improving: '📈', Flat: '➡️', Declining: '📉' };
-const Q_LABELS = {
-  Q1: 'Agent Screened', Q2: 'Cashback Correct', Q3: 'WA Link Sent',
-  Q4: 'Hi Attempt Made', Q5: 'Cashback Mechanic', Q6: 'No Improvised Claims',
-};
-const PERIOD_LABELS = { today: 'Today', week: 'Week-on-Week', month: 'Month-on-Month' };
+const PERIOD_OPTS = { today: 'Today', week: 'Week-on-Week', month: 'Month-on-Month' };
+const Q_LABELS = { Q1: 'Screened', Q2: 'Cashback', Q3: 'WA Link', Q4: 'Hi Attempt', Q5: 'Mechanic', Q6: 'No Claims' };
 
-// ─────────────────────────── pure helpers ───────────────────────────
-
-function isAfter610PM() {
-  const now = new Date(Date.now() + 5.5 * 3600000);
-  const h = now.getUTCHours(); const m = now.getUTCMinutes();
-  return h > 18 || (h === 18 && m >= 10);
+function detectDept(name, wcRecs, utilRecs) {
+  const wc = wcRecs.filter(r => r['Agent Name'] === name).length;
+  const ut = utilRecs.filter(r => r['Agent Name'] === name).length;
+  return wc >= ut ? 'wc' : 'util';
 }
 
-function detectAgentDept(agentName, wcRecords, utilRecords) {
-  const wc = wcRecords.filter(r => (r['Agent Name'] || '') === agentName).length;
-  const ut = utilRecords.filter(r => (r['Agent Name'] || '') === agentName).length;
-  if (wc === 0 && ut === 0) return null;
-  return wc >= ut ? 'welcome' : 'util';
+function computeAgentStats(name, recs, wcRecs, utilRecs) {
+  const agentRecs = recs.filter(r => r['Agent Name'] === name);
+  const total = agentRecs.length;
+  const connected = agentRecs.filter(isConnectedCall).length;
+  const activated = agentRecs.filter(r => r['Call Outcome'] === 'Completed').length;
+  const talkSec = agentRecs.reduce((s, r) => s + (r['Duration Seconds'] || 0), 0);
+  const qaEligible = agentRecs.filter(r => (r['Duration Seconds'] || 0) > 45);
+  let qaPassed = 0, qCounts = [0,0,0,0,0,0];
+  qaEligible.forEach(r => {
+    let pass = 0;
+    for (let i = 0; i < 6; i++) { if (r[`Q${i+1}`] === true || r[`Q${i+1}`] === 'Yes' || r[`Q${i+1}`] === 1) { qCounts[i]++; pass++; } }
+    if (pass >= 4) qaPassed++;
+  });
+  const pitchDone = agentRecs.filter(r => (r['Pitch Completion'] || 0) >= 80).length;
+  const engaged = agentRecs.filter(r => isConnectedCall(r) && (r['Duration Seconds'] || 0) > 120).length;
+  const phones = new Set(agentRecs.filter(r => r['Call Outcome'] === 'Did Not Pick').map(r => r['Phone Number'] || r['Mobile Number'] || '')).size;
+  const phones6 = new Set(agentRecs.filter(r => r['Call Outcome'] === 'Did Not Pick').map(r => r['Phone Number'] || r['Mobile Number'] || '')); // simplified
+  const dept = detectDept(name, wcRecs, utilRecs);
+  return { name, dept, total, connected, activated, talkSec, qaEligible: qaEligible.length, qaPassed, qCounts, pitchDone, engaged, dnpPhones: phones };
 }
-
-function computeAgentPeriodStats(agentName, allRecords, wcRecords, utilRecords, cbHonorStats) {
-  const agentAll  = allRecords.filter(r => (r['Agent Name'] || '') === agentName);
-  const agentWC   = wcRecords.filter(r => (r['Agent Name'] || '') === agentName);
-  const agentUtil = utilRecords.filter(r => (r['Agent Name'] || '') === agentName);
-  const total   = agentAll.length;
-  const wcTotal = agentWC.length;
-  const utilTotal = agentUtil.length;
-  const dept = wcTotal >= utilTotal ? 'welcome' : 'util';
-
-  const connected = agentAll.filter(r => {
-    const o = (r['Call Outcome'] || '').toLowerCase();
-    return !o.includes('dnp') && !o.includes('did not') && !o.includes('no answer') && !o.includes('no-answer');
-  }).length;
-  const connectionRate = total > 0 ? Math.round(connected / total * 100) : 0;
-  const dnpRate = total > 0 ? Math.round((total - connected) / total * 100) : 0;
-
-  // unique phones + attempt depth
-  const phoneAttempts = {};
-  for (const r of agentAll) {
-    const phone = r['Phone Number'] || r['Mobile Number'] || '';
-    if (phone) phoneAttempts[phone] = (phoneAttempts[phone] || 0) + 1;
-  }
-  const uniqueSubscribers = Object.keys(phoneAttempts).length;
-  const avgAttempts = uniqueSubscribers > 0
-    ? (Object.values(phoneAttempts).reduce((s, v) => s + v, 0) / uniqueSubscribers).toFixed(1) : 0;
-  const highAttemptPct = uniqueSubscribers > 0
-    ? Math.round(Object.values(phoneAttempts).filter(v => v >= 6).length / uniqueSubscribers * 100) : 0;
-
-  // WC-specific
-  const pitchCompleted  = agentWC.filter(r => (r['Pitch Completion Score'] || 0) >= 80).length;
-  const pitchCompletionPct = agentWC.length > 0 ? Math.round(pitchCompleted / agentWC.length * 100) : null;
-  const consentClear = agentWC.filter(r => (r['Consent Score'] || 0) >= 7).length;
-  const consentRate  = agentWC.length > 0 ? Math.round(consentClear / agentWC.length * 100) : null;
-  const activations  = agentWC.filter(r =>
-    (r['Activation Status'] || '').toLowerCase().includes('activated')
-  ).length;
-  const activationRate = agentWC.length > 0 ? Math.round(activations / agentWC.length * 100) : null;
-
-  // Util-specific
-  const engagedCalls = agentUtil.filter(r => (r['Talk Time'] || 0) > 120).length;
-  const engagementRate = agentUtil.length > 0 ? Math.round(engagedCalls / agentUtil.length * 100) : null;
-  const sentCalls = agentUtil.filter(r =>
-    r['Sentiment Score Start'] != null && r['Sentiment Score End'] != null
-  );
-  const avgSentimentDelta = sentCalls.length > 0
-    ? (sentCalls.reduce((s, r) =>
-        s + ((r['Sentiment Score End'] || 0) - (r['Sentiment Score Start'] || 0)), 0
-      ) / sentCalls.length).toFixed(2)
-    : null;
-  const channels = { pharmacy: 0, diagnostics: 0, healthcare: 0 };
-  for (const r of agentUtil) {
-    const sum = (r['Summary'] || '').toLowerCase();
-    if (sum.includes('pharmacy') || sum.includes('medicine') || sum.includes('medic')) channels.pharmacy++;
-    else if (sum.includes('diagnostic') || sum.includes('test') || sum.includes('lab')) channels.diagnostics++;
-    else if (sum.includes('hospital') || sum.includes('opd') || sum.includes('surgery') || sum.includes('doctor')) channels.healthcare++;
-  }
-
-  // QA from records
-  const qaRecs = agentAll.filter(r => r['QA Score'] != null);
-  const avgQA  = qaRecs.length > 0
-    ? (qaRecs.reduce((s, r) => s + (r['QA Score'] || 0), 0) / qaRecs.length).toFixed(1)
-    : null;
-
-  const cbStats = cbHonorStats?.byAgent?.[agentName] || null;
-
-  return {
-    agentName, dept, total, wcTotal, utilTotal, connected, connectionRate,
-    dnpRate, avgAttempts, highAttemptPct, uniqueSubscribers,
-    pitchCompletionPct, consentRate, activations, activationRate,
-    engagementRate, avgSentimentDelta, channels, avgQA, cbStats,
-  };
-}
-
-function buildRadarData(stats) {
-  const cb = stats.cbStats ? Math.round(stats.cbStats.rate * 100) : 0;
-  if (stats.dept === 'welcome') {
-    return [
-      { subject: 'Connection',  value: stats.connectionRate  || 0, fullMark: 100 },
-      { subject: 'Pitch Done',  value: stats.pitchCompletionPct ?? 0, fullMark: 100 },
-      { subject: 'Consent',     value: stats.consentRate     ?? 0, fullMark: 100 },
-      { subject: 'Activation',  value: stats.activationRate  ?? 0, fullMark: 100 },
-      { subject: 'DNP 6+',      value: stats.highAttemptPct  || 0, fullMark: 100 },
-      { subject: 'Callback',    value: cb, fullMark: 100 },
-    ];
-  }
-  return [
-    { subject: 'Connection',   value: stats.connectionRate || 0, fullMark: 100 },
-    { subject: 'Engagement',   value: stats.engagementRate ?? 0, fullMark: 100 },
-    { subject: 'Pharma',       value: stats.total > 0 ? Math.round(stats.channels.pharmacy   / stats.total * 100) : 0, fullMark: 100 },
-    { subject: 'Diagnostics',  value: stats.total > 0 ? Math.round(stats.channels.diagnostics/ stats.total * 100) : 0, fullMark: 100 },
-    { subject: 'DNP 6+',       value: stats.highAttemptPct || 0, fullMark: 100 },
-    { subject: 'Callback',     value: cb, fullMark: 100 },
-  ];
-}
-
-// ─────────────────────────── micro components ───────────────────────────
-
-function DeptBadge({ dept }) {
-  if (!dept) return null;
-  const cfg = dept === 'welcome'
-    ? { bg: '#EFF6FF', color: '#1D4ED8', label: 'Welcome Call' }
-    : { bg: '#F0FDFA', color: '#0F766E', label: 'Utilization' };
-  return (
-    <span style={{ background: cfg.bg, color: cfg.color, fontSize: 10, fontWeight: 600,
-      borderRadius: 3, padding: '1px 6px', marginLeft: 6, whiteSpace: 'nowrap' }}>
-      {cfg.label}
-    </span>
-  );
-}
-
-function Kpi({ label, value, sub, color }) {
-  return (
-    <div style={{ background: '#F9FAFB', borderRadius: 6, padding: '8px 10px' }}>
-      <div style={{ fontSize: 10, color: '#9CA3AF', textTransform: 'uppercase',
-        letterSpacing: '0.05em', marginBottom: 2 }}>{label}</div>
-      <div style={{ fontSize: 18, fontWeight: 700, color: color || '#111827' }}>{value}</div>
-      {sub && <div style={{ fontSize: 10, color: '#9CA3AF' }}>{sub}</div>}
-    </div>
-  );
-}
-
-function QBar({ label, pct, isTopMiss }) {
-  if (pct === null || pct === undefined) return null;
-  const color = pct >= 70 ? '#16A34A' : pct >= 40 ? '#D97706' : '#DC2626';
-  const bars = Math.round(pct / 10);
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-      <span style={{ width: 130, fontSize: 12, fontWeight: isTopMiss ? 700 : 400, whiteSpace: 'nowrap' }}>
-        {label}: {Q_LABELS[label] || ''}
-      </span>
-      <div style={{ display: 'flex', gap: 1 }}>
-        {Array.from({ length: 10 }).map((_, i) => (
-          <div key={i} style={{ width: 8, height: 10, borderRadius: 1,
-            background: i < bars ? color : '#E5E7EB' }} />
-        ))}
-      </div>
-      <span style={{ fontSize: 12, color, fontWeight: isTopMiss ? 700 : 400 }}>
-        {pct}%{isTopMiss ? ' ←' : ''}
-      </span>
-    </div>
-  );
-}
-
-function AgentRadar({ agentName, wcRecords, utilRecords, periodRecords, cbHonorStats, deptOverride }) {
-  const stats = useMemo(() => {
-    const agentAll  = periodRecords.filter(r => (r['Agent Name'] || '') === agentName);
-    const agentWC   = wcRecords.filter(r => (r['Agent Name'] || '') === agentName);
-    const agentUtil = utilRecords.filter(r => (r['Agent Name'] || '') === agentName);
-    const total = agentAll.length;
-    const dept  = deptOverride || (agentWC.length >= agentUtil.length ? 'welcome' : 'util');
-
-    const phoneAttempts = {};
-    for (const r of agentAll) {
-      const phone = r['Phone Number'] || r['Mobile Number'] || '';
-      if (phone) phoneAttempts[phone] = (phoneAttempts[phone] || 0) + 1;
-    }
-    const uniquePhones = Object.keys(phoneAttempts).length;
-    const highAttemptPct = uniquePhones > 0
-      ? Math.round(Object.values(phoneAttempts).filter(v => v >= 6).length / uniquePhones * 100) : 0;
-
-    const connected = agentAll.filter(r => {
-      const o = (r['Call Outcome'] || '').toLowerCase();
-      return !o.includes('dnp') && !o.includes('did not') && !o.includes('no answer');
-    }).length;
-
-    const pitchCompleted = agentWC.filter(r => (r['Pitch Completion Score'] || 0) >= 80).length;
-    const consentClear   = agentWC.filter(r => (r['Consent Score'] || 0) >= 7).length;
-    const activations    = agentWC.filter(r =>
-      (r['Activation Status'] || '').toLowerCase().includes('activated')
-    ).length;
-    const engagedCalls   = agentUtil.filter(r => (r['Talk Time'] || 0) > 120).length;
-
-    const channels = { pharmacy: 0, diagnostics: 0, healthcare: 0 };
-    for (const r of agentUtil) {
-      const s = (r['Summary'] || '').toLowerCase();
-      if (s.includes('pharmacy') || s.includes('medicine')) channels.pharmacy++;
-      else if (s.includes('diagnostic') || s.includes('test') || s.includes('lab')) channels.diagnostics++;
-      else if (s.includes('hospital') || s.includes('opd') || s.includes('surgery')) channels.healthcare++;
-    }
-
-    return {
-      dept,
-      connectionRate:    total > 0 ? Math.round(connected / total * 100) : 0,
-      pitchCompletionPct: agentWC.length > 0 ? Math.round(pitchCompleted / agentWC.length * 100) : 0,
-      consentRate:        agentWC.length > 0 ? Math.round(consentClear / agentWC.length * 100) : 0,
-      activationRate:     agentWC.length > 0 ? Math.round(activations / agentWC.length * 100) : 0,
-      engagementRate:     agentUtil.length > 0 ? Math.round(engagedCalls / agentUtil.length * 100) : 0,
-      highAttemptPct,
-      channels, total,
-      cbStats: cbHonorStats?.byAgent?.[agentName] || null,
-    };
-  }, [agentName, wcRecords, utilRecords, periodRecords, cbHonorStats, deptOverride]);
-
-  const radarData = buildRadarData(stats);
-  const color = stats.dept === 'welcome' ? '#1D4ED8' : '#0F766E';
-
-  return (
-    <div style={{ height: 200, marginBottom: 8 }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <RadarChart data={radarData}>
-          <PolarGrid stroke="#E5E7EB" />
-          <PolarAngleAxis dataKey="subject" tick={{ fontSize: 10, fill: '#6B7280' }} />
-          <Radar dataKey="value" stroke={color} fill={color} fillOpacity={0.2} />
-          <ReTooltip formatter={(v) => [`${v}%`, '']} />
-        </RadarChart>
-      </ResponsiveContainer>
-    </div>
-  );
-}
-
-function DnpCallbackStrip({ agentName, periodRecords, cbHonorStats }) {
-  const agentRecords = periodRecords.filter(r => (r['Agent Name'] || '') === agentName);
-  const phoneAttempts = {};
-  for (const r of agentRecords) {
-    const phone = r['Phone Number'] || r['Mobile Number'] || '';
-    if (phone) phoneAttempts[phone] = (phoneAttempts[phone] || 0) + 1;
-  }
-  const uniquePhones    = Object.keys(phoneAttempts).length;
-  const highAttemptCount = Object.values(phoneAttempts).filter(v => v >= 6).length;
-  const highAttemptPct   = uniquePhones > 0 ? Math.round(highAttemptCount / uniquePhones * 100) : 0;
-  const cbStats = cbHonorStats?.byAgent?.[agentName];
-  const cbRate  = cbStats ? Math.round(cbStats.rate * 100) : null;
-
-  if (uniquePhones === 0 && cbRate === null) return null;
-
-  return (
-    <div style={{ display: 'flex', gap: 8, marginTop: 8, marginBottom: 4, flexWrap: 'wrap' }}>
-      {uniquePhones > 0 && (
-        <div style={{
-          background: highAttemptPct >= 40 ? '#F0FDF4' : '#FEF3C7',
-          border: `1px solid ${highAttemptPct >= 40 ? '#BBF7D0' : '#FDE68A'}`,
-          borderRadius: 4, padding: '3px 10px', fontSize: 11,
-        }}>
-          <span style={{ color: '#6B7280' }}>DNP Persist </span>
-          <strong style={{ color: highAttemptPct >= 40 ? '#15803D' : '#B45309' }}>
-            {highAttemptPct}%
-          </strong>
-          <span style={{ color: '#9CA3AF' }}> ({highAttemptCount}/{uniquePhones} reached 6+)</span>
-        </div>
-      )}
-      {cbRate !== null && (
-        <div style={{
-          background: cbRate >= 80 ? '#F0FDF4' : cbRate >= 60 ? '#FEF3C7' : '#FEF2F2',
-          border: `1px solid ${cbRate >= 80 ? '#BBF7D0' : cbRate >= 60 ? '#FDE68A' : '#FECACA'}`,
-          borderRadius: 4, padding: '3px 10px', fontSize: 11,
-        }}>
-          <span style={{ color: '#6B7280' }}>Callback Honor </span>
-          <strong style={{ color: cbRate >= 80 ? '#15803D' : cbRate >= 60 ? '#B45309' : '#DC2626' }}>
-            {cbRate}%
-          </strong>
-          <span style={{ color: '#9CA3AF' }}> ({cbStats.onTime}/{cbStats.total} on time)</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─────────────────────────── TODAY agent card ───────────────────────────
-
-function AgentCard({ record, isAgent, dept, wcRecords, utilRecords, cbHonorStats, periodRecords }) {
-  const f = record;
-  const [expanded, setExpanded] = useState(false);
-  const [showViolations, setShowViolations] = useState(false);
-  const [showRadar, setShowRadar] = useState(false);
-
-  const alertLevel    = f['Alert Level'] || 'OK';
-  const borderColor   = ALERT_COLORS[alertLevel] || '#E5E7EB';
-  const qaAvg         = f['QA Score Today'] || 0;
-  const scored        = f['QA Scored Calls'] || 0;
-  const coverage      = f['QA Coverage Pct'] || 0;
-  const trend         = f['Trend'] || '—';
-  const qa7d          = f['QA Score 7d Avg'];
-  const trackingDay   = f['Tracking Day'] || 1;
-  const intradayAlert = f['Intraday Alert'] || '';
-  const complianceCount = f['Compliance Count Today'] || 0;
-  const topMiss       = f['Top Miss'] || '';
-  // Try multiple possible field names for coaching brief (scraper may use any of these)
-  const coachingBrief = f['Coaching Brief'] || f['Brief'] || f['Coaching Notes'] || f['Daily Brief'] || f['Coaching Summary'] || '';
-  const actionPoints  = f['Action Points'] || f['Actions'] || f['Action Items'] || '';
-  const patternFlag   = f['Pattern Flag'] || '';
-  const worstPattern  = f['Worst Pattern'] || '';
-  const bestCallId    = f['Best Call ID'] || '';
-  const bestCallURL   = f['Best Call Recording URL'] || '';
-  const agentName     = f['Agent Name'] || '';
-  const trendIcon     = TREND_ICONS[trend] || '';
-  const after610      = isAfter610PM();
-  const topMissLabel  = topMiss.match(/Q\d/)?.[0];
-
-  const qFields = ['Q1','Q2','Q3','Q4','Q5','Q6'].map(q => ({
-    label: q, pct: f[`${q} Pass Pct`],
-  }));
-
-  return (
-    <div style={{ border: `2px solid ${borderColor}`, borderRadius: 8, padding: 16,
-      marginBottom: 12, background: '#fff' }}>
-
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-          <span style={{ fontWeight: 700, fontSize: 16 }}>{agentName}</span>
-          <DeptBadge dept={dept} />
-          {trendIcon && <span style={{ fontSize: 14 }}>{trendIcon}</span>}
-          {trackingDay <= 7 && (
-            <span style={{ fontSize: 11, color: '#9CA3AF' }}>Day {trackingDay}</span>
-          )}
-        </div>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-          <button onClick={() => setShowRadar(!showRadar)}
-            style={{ padding: '2px 8px', fontSize: 11, borderRadius: 3,
-              border: '1px solid #D1D5DB',
-              background: showRadar ? '#EFF6FF' : '#F9FAFB',
-              color: '#374151', cursor: 'pointer' }}>
-            {showRadar ? 'Hide Radar' : 'Radar'}
-          </button>
-          <span style={{ background: borderColor, color: '#fff', borderRadius: 4,
-            padding: '2px 8px', fontSize: 12, fontWeight: 700 }}>
-            {alertLevel}
-          </span>
-        </div>
-      </div>
-
-      {/* Radar (optional) */}
-      {showRadar && (
-        <AgentRadar
-          agentName={agentName}
-          wcRecords={wcRecords} utilRecords={utilRecords}
-          periodRecords={periodRecords}
-          cbHonorStats={cbHonorStats}
-          deptOverride={dept}
-        />
-      )}
-
-      {/* QA summary */}
-      {(() => {
-        const disputed = f['Disputed Calls'] || 0;
-        const csp      = f['CSP Calls'] || 0;
-        const lb       = f['Language Barrier Calls'] || 0;
-        const excluded = disputed + csp + lb;
-        const parts = [];
-        if (csp > 0)      parts.push(`${csp} Agent/CSP`);
-        if (disputed > 0) parts.push(`${disputed} Disputed`);
-        if (lb > 0)       parts.push(`${lb} Lang Barrier`);
-        return (
-          <div style={{ fontSize: 13, color: '#374151', marginBottom: 8 }}>
-            QA: <strong>{qaAvg}/6</strong> ({scored} Full Pitch calls)
-            {excluded > 0 && (
-              <span style={{ color: '#9CA3AF', fontSize: 11 }}>
-                &nbsp;&nbsp;|&nbsp;&nbsp;+{excluded} excluded ({parts.join(', ')})
-              </span>
-            )}
-            &nbsp;&nbsp;|&nbsp;&nbsp;Coverage: {coverage}%{coverage < 50 ? ' ⚠️' : ''}
-            &nbsp;&nbsp;|&nbsp;&nbsp;7d avg: <strong>{qa7d != null ? `${qa7d}/6` : '—'}</strong>
-            {trackingDay <= 7 && <span style={{ color: '#9CA3AF' }}> (establishing baseline)</span>}
-          </div>
-        );
-      })()}
-
-      {/* Q bars */}
-      <div style={{ display: 'flex', flexDirection: 'column', marginBottom: 6 }}>
-        {qFields.map(({ label, pct }) => (
-          <QBar key={label} label={label} pct={pct} isTopMiss={label === topMissLabel} />
-        ))}
-      </div>
-
-      {/* DNP + Callback strip */}
-      <DnpCallbackStrip
-        agentName={agentName}
-        periodRecords={periodRecords}
-        cbHonorStats={cbHonorStats}
-      />
-
-      {/* Call mix badges */}
-      {(() => {
-        const disputed = f['Disputed Calls'] || 0;
-        const csp      = f['CSP Calls'] || 0;
-        const lb       = f['Language Barrier Calls'] || 0;
-        if (disputed === 0 && csp === 0 && lb === 0) return null;
-        return (
-          <div style={{ display: 'flex', gap: 8, marginTop: 6, marginBottom: 4, flexWrap: 'wrap' }}>
-            {disputed > 0 && (
-              <span style={{ background: '#FEF2F2', color: '#B91C1C', fontSize: 11,
-                borderRadius: 4, padding: '2px 8px', fontWeight: 600 }}>
-                ⚠️ {disputed} Disputed
-              </span>
-            )}
-            {csp > 0 && (
-              <span style={{ background: '#F5F3FF', color: '#7C3AED', fontSize: 11,
-                borderRadius: 4, padding: '2px 8px', fontWeight: 600 }}>
-                🏪 {csp} Agent/CSP
-              </span>
-            )}
-            {lb > 0 && (
-              <span style={{ background: '#F0FDFA', color: '#0F766E', fontSize: 11,
-                borderRadius: 4, padding: '2px 8px', fontWeight: 600 }}>
-                🗣️ {lb} Language Barrier
-              </span>
-            )}
-          </div>
-        );
-      })()}
-
-      <IntradayProgress agentName={agentName} />
-
-      {!isAgent && complianceCount > 0 && (
-        <div style={{ background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 4,
-          padding: '4px 8px', fontSize: 12, color: '#B91C1C', marginBottom: 6 }}>
-          🚨 {complianceCount} compliance violation(s) today
-        </div>
-      )}
-      {intradayAlert && !after610 && (
-        <div style={{ fontSize: 12, color: '#6B7280', marginBottom: 6 }}>{intradayAlert}</div>
-      )}
-
-      {/* Action buttons */}
-      <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-        {after610 && coachingBrief.length > 0 && (
-          <button onClick={() => setExpanded(!expanded)}
-            style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4,
-              background: '#1D4ED8', color: '#fff', border: 'none', cursor: 'pointer' }}>
-            {expanded ? 'Hide Brief ↑' : 'View Full Brief ↓'}
-          </button>
-        )}
-        {!after610 && (
-          <span style={{ fontSize: 12, color: '#9CA3AF' }}>Coaching brief available after 6:10 PM</span>
-        )}
-        {bestCallURL && (
-          <a href={bestCallURL} target="_blank" rel="noreferrer"
-            style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4,
-              background: '#F3F4F6', color: '#374151', border: '1px solid #D1D5DB', textDecoration: 'none' }}>
-            🎧 Best call ({bestCallId})
-          </a>
-        )}
-        {!isAgent && complianceCount > 0 && (
-          <button onClick={() => setShowViolations(!showViolations)}
-            style={{ padding: '4px 10px', fontSize: 12, borderRadius: 4,
-              background: '#FEE2E2', color: '#B91C1C', border: '1px solid #FECACA', cursor: 'pointer' }}>
-            {showViolations ? 'Hide Violations ↑' : `Violations (${complianceCount}) →`}
-          </button>
-        )}
-      </div>
-
-      {/* Violations detail */}
-      {showViolations && complianceCount > 0 && (
-        <div style={{ marginTop: 10, padding: 10, background: '#FEF2F2',
-          borderRadius: 6, borderLeft: '3px solid #DC2626' }}>
-          <div style={{ fontWeight: 600, fontSize: 12, color: '#B91C1C', marginBottom: 6 }}>
-            COMPLIANCE VIOLATIONS ({complianceCount})
-          </div>
-          <div style={{ fontSize: 12, color: '#7F1D1D', lineHeight: 1.6 }}>
-            {complianceCount} violation(s) flagged today for {agentName}.
-            Review recordings before next shift.
-          </div>
-          {intradayAlert && (
-            <div style={{ fontSize: 12, color: '#991B1B', marginTop: 6, fontStyle: 'italic' }}>
-              {intradayAlert}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Expanded coaching brief — if coachingBrief is empty, show debug dump of available string fields */}
-      {expanded && (
-        <div style={{ marginTop: 12, padding: 12, background: '#F9FAFB',
-          borderRadius: 6, borderLeft: '3px solid #1D4ED8' }}>
-          {coachingBrief.length > 0 ? (
-            <div style={{ fontSize: 13, lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 10 }}>
-              {coachingBrief}
-            </div>
-          ) : (
-            <div>
-              <div style={{ fontSize: 11, color: '#9CA3AF', marginBottom: 6 }}>
-                ⚠️ <strong>Field "Coaching Brief" is empty.</strong> Fields available in this coaching record:
-              </div>
-              <div style={{ fontSize: 11, lineHeight: 1.8 }}>
-                {Object.entries(f)
-                  .filter(([k, v]) => v && typeof v === 'string' && v.length > 5 && !['id','Agent Name'].includes(k))
-                  .map(([k, v]) => (
-                    <div key={k}><strong>{k}:</strong> {v.slice(0, 100)}{v.length > 100 ? '…' : ''}</div>
-                  ))
-                }
-              </div>
-            </div>
-          )}
-
-          {actionPoints && (
-            <div style={{ marginBottom: 8 }}>
-              <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 4 }}>ACTION POINTS</div>
-              <div style={{ fontSize: 12, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>{actionPoints}</div>
-            </div>
-          )}
-          {patternFlag && (
-            <div style={{ background: '#FEF3C7', border: '1px solid #FDE68A', borderRadius: 4,
-              padding: '6px 10px', fontSize: 12, color: '#92400E' }}>
-              ⚠️ PATTERN FLAG: {patternFlag}
-            </div>
-          )}
-          {!isAgent && worstPattern && (
-            <div style={{ background: '#FEE2E2', border: '1px solid #FECACA', borderRadius: 4,
-              padding: '6px 10px', fontSize: 12, color: '#B91C1C', marginTop: 6 }}>
-              🔁 STUCK PATTERN: {worstPattern}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* HiL Review badge */}
-      {(() => {
-        const hilCount = f['HiL Review Count Today'] || 0;
-        const hilCaught = f['HiL Compliance Caught'] || 0;
-        return hilCount > 0 ? (
-          <div style={{ background: '#EFF6FF', border: '1px solid #BFDBFE',
-            borderRadius: 4, padding: '6px 10px', marginTop: 6, fontSize: 11 }}>
-            🔍 <strong>{hilCount} calls human-reviewed today</strong>
-            {hilCaught > 0 && (
-              <span style={{ color: '#DC2626', marginLeft: 8 }}>
-                {hilCaught} compliance issue(s) found
-              </span>
-            )}
-          </div>
-        ) : null;
-      })()}
-
-      <AgentCallbackBriefing agentName={agentName} />
-    </div>
-  );
-}
-
-// ─────────────────────────── WoW / MoM agent card ───────────────────────────
-
-function PeriodAgentCard({ stats, isAgent, period }) {
-  const [showRadar, setShowRadar] = useState(false);
-  const {
-    agentName, dept, total, uniqueSubscribers, connectionRate,
-    highAttemptPct, avgAttempts, pitchCompletionPct, consentRate,
-    activations, activationRate, engagementRate, avgSentimentDelta,
-    channels, avgQA, cbStats,
-  } = stats;
-
-  const cbRate = cbStats ? Math.round(cbStats.rate * 100) : null;
-  const accentColor = dept === 'welcome' ? '#1D4ED8' : '#0F766E';
-  const cardBorder  = dept === 'welcome' ? '#BFDBFE' : '#99F6E4';
-  const periodLabel = period === 'week' ? 'this week' : 'this month';
-
-  // Pre-build radar data since we already have the computed stats
-  const radarData = buildRadarData(stats);
-
-  return (
-    <div style={{ border: `2px solid ${cardBorder}`, borderRadius: 8, padding: 16,
-      marginBottom: 12, background: '#fff' }}>
-
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontWeight: 700, fontSize: 16 }}>{agentName}</span>
-          <DeptBadge dept={dept} />
-        </div>
-        <button onClick={() => setShowRadar(!showRadar)}
-          style={{ padding: '2px 8px', fontSize: 11, borderRadius: 3,
-            border: '1px solid #D1D5DB',
-            background: showRadar ? '#EFF6FF' : '#F9FAFB',
-            color: '#374151', cursor: 'pointer' }}>
-          {showRadar ? 'Hide Radar' : 'Radar'}
-        </button>
-      </div>
-
-      {/* Radar */}
-      {showRadar && (
-        <div style={{ height: 200, marginBottom: 8 }}>
-          <ResponsiveContainer width="100%" height="100%">
-            <RadarChart data={radarData}>
-              <PolarGrid stroke="#E5E7EB" />
-              <PolarAngleAxis dataKey="subject" tick={{ fontSize: 10, fill: '#6B7280' }} />
-              <Radar dataKey="value" stroke={accentColor} fill={accentColor} fillOpacity={0.2} />
-              <ReTooltip formatter={(v) => [`${v}%`, '']} />
-            </RadarChart>
-          </ResponsiveContainer>
-        </div>
-      )}
-
-      {/* KPI grid */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 6 }}>
-        <Kpi label="Total Calls"       value={total}        sub={`${uniqueSubscribers} unique numbers`} />
-        <Kpi label="Connection Rate"   value={`${connectionRate}%`}
-          sub={`${Math.round(total * connectionRate / 100)} connected`}
-          color={connectionRate >= 70 ? '#15803D' : connectionRate >= 50 ? '#B45309' : '#DC2626'} />
-        <Kpi label="DNP Persistence"   value={`${highAttemptPct}%`}
-          sub={`avg ${avgAttempts} attempts`}
-          color={highAttemptPct >= 40 ? '#15803D' : '#B45309'} />
-
-        {dept === 'welcome' && pitchCompletionPct !== null && (
-          <Kpi label="Pitch Complete" value={`${pitchCompletionPct}%`} sub="≥80% score"
-            color={pitchCompletionPct >= 60 ? '#15803D' : pitchCompletionPct >= 40 ? '#B45309' : '#DC2626'} />
-        )}
-        {dept === 'welcome' && consentRate !== null && (
-          <Kpi label="Consent Clear" value={`${consentRate}%`} sub="score ≥7"
-            color={consentRate >= 50 ? '#15803D' : consentRate >= 30 ? '#B45309' : '#DC2626'} />
-        )}
-        {dept === 'welcome' && activationRate !== null && (
-          <Kpi label="Activated" value={`${activationRate}%`} sub={`${activations} total`}
-            color={activationRate >= 20 ? '#15803D' : activationRate >= 10 ? '#B45309' : '#DC2626'} />
-        )}
-
-        {dept === 'util' && engagementRate !== null && (
-          <Kpi label="Engagement" value={`${engagementRate}%`} sub=">2min calls"
-            color={engagementRate >= 50 ? '#15803D' : engagementRate >= 30 ? '#B45309' : '#DC2626'} />
-        )}
-        {dept === 'util' && avgSentimentDelta !== null && (
-          <Kpi label="Sentiment Δ"
-            value={parseFloat(avgSentimentDelta) > 0 ? `+${avgSentimentDelta}` : `${avgSentimentDelta}`}
-            sub="avg per call"
-            color={parseFloat(avgSentimentDelta) > 0 ? '#15803D' : '#DC2626'} />
-        )}
-        {dept === 'util' && (
-          <Kpi label="Channels"
-            value={`${channels.pharmacy}💊 ${channels.diagnostics}🔬 ${channels.healthcare}🏥`}
-            sub="pharma / diag / care" />
-        )}
-
-        {cbRate !== null && (
-          <Kpi label="Callback Honor" value={`${cbRate}%`}
-            sub={`${cbStats.onTime}/${cbStats.total} on time`}
-            color={cbRate >= 80 ? '#15803D' : cbRate >= 60 ? '#B45309' : '#DC2626'} />
-        )}
-        {avgQA !== null && (
-          <Kpi label="Avg QA Score" value={`${avgQA}/6`} sub={periodLabel}
-            color={parseFloat(avgQA) >= 4 ? '#15803D' : parseFloat(avgQA) >= 3 ? '#B45309' : '#DC2626'} />
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ─────────────────────────── BiggestMovesPanel ───────────────────────────
-
-function BiggestMovesPanel({ userRole }) {
-  const [allMoves, setAllMoves] = useState([]);
-  const isAgent = userRole === 'AGENT';
-
-  useEffect(() => {
-    if (isAgent) return;
-    fetchTodaySnapshots(null).then(snaps => {
-      const byAgent = {};
-      for (const s of snaps) {
-        const a = s['Agent Name'];
-        if (!byAgent[a]) byAgent[a] = [];
-        byAgent[a].push(s);
-      }
-      const moves = [];
-      for (const [agent, agentSnaps] of Object.entries(byAgent)) {
-        agentSnaps.sort((a, b) => (a['Window Number'] || 0) - (b['Window Number'] || 0));
-        for (let i = 1; i < agentSnaps.length; i++) {
-          const prev = agentSnaps[i - 1]; const curr = agentSnaps[i];
-          for (const q of ['Q1','Q2','Q3','Q4','Q5','Q6']) {
-            const p = prev[`${q} Cumulative Pct`] ?? null;
-            const c = curr[`${q} Cumulative Pct`] ?? null;
-            if (p === null || c === null) continue;
-            const d = parseFloat((c - p).toFixed(1));
-            if (Math.abs(d) >= 5) moves.push({ agent, q, delta: d, time: curr['Snapshot Time'] });
-          }
-        }
-      }
-      moves.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
-      setAllMoves(moves.slice(0, 5));
-    });
-  }, [isAgent]);
-
-  if (isAgent || !allMoves.length) return null;
-
-  return (
-    <div style={{ background: '#F9FAFB', border: '1px solid #E5E7EB',
-      borderRadius: 6, padding: '10px 14px', marginBottom: 16 }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: '#6B7280',
-        textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
-        Biggest Moves Today
-      </div>
-      {allMoves.map((m, i) => (
-        <div key={i} style={{ display: 'flex', justifyContent: 'space-between',
-          fontSize: 12, marginBottom: 4, color: '#374151' }}>
-          <span>
-            <strong>{m.agent}</strong>&nbsp; {m.q}&nbsp;
-            <span style={{ color: '#9CA3AF' }}>{m.time} window</span>
-          </span>
-          <span style={{ fontWeight: 700, color: m.delta > 0 ? '#16A34A' : '#DC2626' }}>
-            {m.delta > 0 ? '+' : ''}{m.delta}% {m.delta > 0 ? '↑' : '↓'}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ─────────────────────────── main export ───────────────────────────
 
 export default function AgentReview({
-  data = [],
-  periodRecords = [], wcRecords = [], utilRecords = [],
-  teamConfig = [],
+  data = [], periodRecords = [], wcRecords = [], utilRecords = [],
+  attemptMap = {}, teamConfig = [],
   userRole, userAgentName, userDepartment,
-  period = 'today', periodStart, periodEnd,
+  period, periodStart, periodEnd,
 }) {
-  const { role: authRole, agentName: authAgentName } = useAuth();
-  const role      = userRole || authRole;
-  const agentName = userAgentName || authAgentName;
-  const isAgent   = role === 'AGENT';
+  const { role, agentName: authAgentName } = useAuth() || {};
+  const effectiveRole = userRole || role;
+  const effectiveAgent = userAgentName || authAgentName;
+  const isAgentOnly = effectiveRole === 'AGENT';
 
-  // Internal period selector (independent from the page-level period)
   const [activePeriod, setActivePeriod] = useState('today');
-
-  // Local fetch for WoW/MoM — fetches its own data when not 'today'
-  const [localRecords, setLocalRecords] = useState([]);
+  const [localPR, setLocalPR] = useState(null);
   const [localLoading, setLocalLoading] = useState(false);
+  const [expandedAgent, setExpandedAgent] = useState(null);
 
+  // Fetch own data for WoW/MoM
   useEffect(() => {
-    if (activePeriod === 'today') { setLocalRecords([]); return; }
+    if (activePeriod === 'today') { setLocalPR(null); return; }
+    const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    let start;
+    if (activePeriod === 'week') {
+      const dow = today.getDay();
+      start = new Date(today); start.setDate(today.getDate() - (dow === 0 ? 6 : dow - 1));
+    } else {
+      start = new Date(today.getFullYear(), today.getMonth(), 1);
+    }
+    const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
     setLocalLoading(true);
-    const { start, end } = getPeriodDates(activePeriod === 'month' ? 'mtd' : 'week');
-    fetchRecordsForPeriod(start, end)
-      .then(setLocalRecords)
-      .catch(() => setLocalRecords([]))
+    fetchRecordsForPeriod(fmt(start), fmt(today))
+      .then(r => setLocalPR(r))
+      .catch(() => setLocalPR([]))
       .finally(() => setLocalLoading(false));
   }, [activePeriod]);
 
-  // Use local records for WoW/MoM, page-level records for today
-  const effectivePR   = activePeriod === 'today' ? periodRecords : localRecords;
-  const effectiveWC   = useMemo(() => effectivePR.filter(isWelcomeCallRecord),   [effectivePR]);
-  const effectiveUtil = useMemo(() => effectivePR.filter(isUtilizationRecord),   [effectivePR]);
+  const effectivePR = activePeriod === 'today' ? periodRecords : (localPR || []);
+  const effectiveWC = useMemo(() => effectivePR.filter(isWelcomeCallRecord), [effectivePR]);
+  const effectiveUtil = useMemo(() => effectivePR.filter(isUtilizationRecord), [effectivePR]);
+  const cbStats = useMemo(() => computeCallbackHonorStats(effectivePR), [effectivePR]);
 
-  // Callback honor stats computed from effective records
-  const cbHonorStats = useMemo(() =>
-    computeCallbackHonorStats(effectivePR), [effectivePR]);
+  // ── Today mode: coaching snapshots ──
+  const todayAgents = useMemo(() => {
+    if (activePeriod !== 'today') return [];
+    let agents = [...data];
+    if (isAgentOnly && effectiveAgent) agents = agents.filter(a => a['Agent Name'] === effectiveAgent);
+    return agents.sort((a, b) => {
+      const order = { CRITICAL: 0, WARNING: 1, WATCH: 2, OK: 3 };
+      return (order[a['Alert Level']] ?? 4) - (order[b['Alert Level']] ?? 4);
+    });
+  }, [data, activePeriod, isAgentOnly, effectiveAgent]);
 
-  // Dept map per agent name
-  const agentDeptMap = useMemo(() => {
-    const names = new Set([
-      ...effectivePR.map(r => r['Agent Name'] || ''),
-      ...(data || []).map(r => r['Agent Name'] || ''),
-    ]);
-    const map = {};
-    for (const name of names) {
-      if (name) map[name] = detectAgentDept(name, effectiveWC, effectiveUtil);
-    }
-    return map;
-  }, [effectivePR, data, effectiveWC, effectiveUtil]);
-
-  // TODAY — snapshot-based cards
-  const visibleData = useMemo(() => {
-    const d = data || [];
-    return isAgent && agentName
-      ? d.filter(r => (r['Agent Name'] || '').toLowerCase() === agentName.toLowerCase())
-      : d;
-  }, [data, isAgent, agentName]);
-
-  const sortedToday = useMemo(() => [...visibleData].sort((a, b) =>
-    (ALERT_ORDER[a['Alert Level'] || 'OK'] ?? 4) - (ALERT_ORDER[b['Alert Level'] || 'OK'] ?? 4)
-  ), [visibleData]);
-
-  // WoW / MoM — record-derived cards
-  const agentPeriodStats = useMemo(() => {
+  // ── Period mode: derive from records ──
+  const periodAgents = useMemo(() => {
     if (activePeriod === 'today') return [];
-    const names = new Set(effectivePR.map(r => r['Agent Name'] || '').filter(Boolean));
-    return [...names]
-      .map(name => computeAgentPeriodStats(name, effectivePR, effectiveWC, effectiveUtil, cbHonorStats))
-      .filter(s => s.total > 0)
-      .sort((a, b) => b.total - a.total);
-  }, [activePeriod, effectivePR, effectiveWC, effectiveUtil, cbHonorStats]);
-
-  const visiblePeriodStats = useMemo(() =>
-    isAgent && agentName
-      ? agentPeriodStats.filter(s => s.agentName.toLowerCase() === agentName.toLowerCase())
-      : agentPeriodStats,
-  [agentPeriodStats, isAgent, agentName]);
-
-  // Team stats for TODAY verdict
-  const teamStats = useMemo(() => {
-    if (isAgent || !data || data.length === 0) return null;
-    const d = data;
-    const qaAvg = (d.reduce((s, a) => s + (a['QA Score Today'] || 0), 0) / d.length).toFixed(2);
-    const q2Vals = d.map(a => a['Q2 Pass Pct']).filter(v => v != null);
-    const q2Avg  = q2Vals.length > 0
-      ? (q2Vals.reduce((s, v) => s + v, 0) / q2Vals.length).toFixed(0) : '—';
-    const totalCompliance = d.reduce((s, a) => s + (a['Compliance Count Today'] || 0), 0);
-    const avgCoverage     = (d.reduce((s, a) => s + (a['QA Coverage Pct'] || 0), 0) / d.length).toFixed(0);
-    const criticalCount   = d.filter(a => a['Alert Level'] === 'CRITICAL').length;
-    const improvingCount  = d.filter(a => a['Trend'] === 'Improving').length;
-    return { qaAvg, q2Avg, totalCompliance, avgCoverage, criticalCount, improvingCount };
-  }, [isAgent, data]);
-
-  const verdict = teamStats
-    ? (teamStats.criticalCount > 0 || teamStats.totalCompliance > 2 ? 'red'
-      : Number(teamStats.avgCoverage) < 50 || Number(teamStats.qaAvg) < 3 ? 'amber' : 'green')
-    : null;
+    const names = new Set(effectivePR.map(r => r['Agent Name']).filter(Boolean));
+    let list = [...names].map(name => computeAgentStats(name, effectivePR, effectiveWC, effectiveUtil));
+    if (isAgentOnly && effectiveAgent) list = list.filter(a => a.name === effectiveAgent);
+    return list.sort((a, b) => b.total - a.total);
+  }, [activePeriod, effectivePR, effectiveWC, effectiveUtil, isAgentOnly, effectiveAgent]);
 
   return (
-    <div style={{ padding: 20 }}>
-
-      {/* Period selector */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap', alignItems: 'center' }}>
-        {Object.entries(PERIOD_LABELS).map(([key, label]) => (
-          <button key={key} onClick={() => setActivePeriod(key)}
-            style={{ padding: '6px 16px', borderRadius: 6, fontSize: 13, fontWeight: 600,
-              border: `1px solid ${activePeriod === key ? '#1D4ED8' : '#D1D5DB'}`,
-              background: activePeriod === key ? '#1D4ED8' : '#fff',
-              color: activePeriod === key ? '#fff' : '#374151',
-              cursor: 'pointer' }}>
-            {label}
+    <div className="space-y-5">
+      {/* Period Toggle */}
+      <div className="flex gap-2">
+        {Object.entries(PERIOD_OPTS).map(([k, v]) => (
+          <button key={k} onClick={() => setActivePeriod(k)}
+            className={`px-3 py-1.5 text-xs font-medium rounded-full ${activePeriod === k ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+            {v}
           </button>
         ))}
-        {activePeriod !== 'today' && periodStart && (
-          <span style={{ fontSize: 12, color: '#9CA3AF' }}>
-            {periodStart}{periodEnd ? ` – ${periodEnd}` : ''}
-          </span>
-        )}
       </div>
 
-      {/* ══════════ TODAY mode ══════════ */}
-      {activePeriod === 'today' && (
-        <>
-          <PostActivationWasteAlert />
+      {localLoading && <div className="text-center py-10 text-gray-400">Loading {PERIOD_OPTS[activePeriod]} records...</div>}
 
-          {/* Critical banner */}
-          {!isAgent && (() => {
-            const critical = (data || []).filter(
-              a => a['Alert Level'] === 'CRITICAL' && (a['Connected Calls'] || 0) >= 3
-            );
-            return critical.length > 0 ? (
-              <div style={{ background: '#FEE2E2', border: '1px solid #FECACA', borderRadius: 6,
-                padding: '10px 14px', marginBottom: 16, fontSize: 13, color: '#B91C1C' }}>
-                ⚠️ Action Required: {critical.map(a => a['Agent Name']).join(', ')} — CRITICAL. Intervene before next shift.
-              </div>
-            ) : null;
-          })()}
+      {/* ── TODAY MODE ── */}
+      {activePeriod === 'today' && !localLoading && (
+        todayAgents.length === 0 ? (
+          <div className="text-center py-16 text-gray-400">
+            <p className="text-lg">No coaching data today</p>
+            <p className="text-sm mt-1">Populates after first scrape cycle</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {todayAgents.map(agent => (
+              <TodayAgentCard key={agent.id || agent['Agent Name']} agent={agent}
+                expanded={expandedAgent === agent['Agent Name']}
+                onToggle={() => setExpandedAgent(expandedAgent === agent['Agent Name'] ? null : agent['Agent Name'])}
+                cbStats={cbStats} wcRecords={wcRecords} utilRecords={utilRecords} />
+            ))}
+          </div>
+        )
+      )}
 
-          {/* Verdict + hero KPIs */}
-          {!isAgent && verdict && teamStats && (
-            <div className="space-y-3 mb-6">
-              <div className={`${verdict === 'green' ? 'bg-green-600' : verdict === 'amber' ? 'bg-yellow-500' : 'bg-red-600'} text-white rounded-xl px-5 py-3 flex items-center justify-between`}>
-                <div>
-                  <p className="text-2xl font-black">
-                    {verdict === 'green' ? 'Team On Track' : verdict === 'amber' ? 'Watch' : 'Action Needed'}
-                  </p>
-                  <p className="text-xs opacity-80">Agent Review — {(data || []).length} agents</p>
-                </div>
-                <div className="flex gap-2">
-                  {[
-                    teamStats.criticalCount === 0 ? 'green' : 'red',
-                    teamStats.totalCompliance === 0 ? 'green' : teamStats.totalCompliance <= 2 ? 'amber' : 'red',
-                    Number(teamStats.qaAvg) >= 4 ? 'green' : Number(teamStats.qaAvg) >= 3 ? 'amber' : 'red',
-                    Number(teamStats.avgCoverage) >= 70 ? 'green' : Number(teamStats.avgCoverage) >= 50 ? 'amber' : 'red',
-                  ].map((l, i) => (
-                    <span key={i} className={`w-3 h-3 rounded-full ${l === 'green' ? 'bg-green-300' : l === 'amber' ? 'bg-yellow-300' : 'bg-red-300'}`} />
-                  ))}
-                </div>
-              </div>
-              <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-                <div className={`rounded-xl border p-4 col-span-2 ${Number(teamStats.qaAvg) >= 4 ? 'bg-green-50 border-green-200' : Number(teamStats.qaAvg) >= 3 ? 'bg-yellow-50 border-yellow-200' : 'bg-red-50 border-red-200'}`}>
-                  <p className="text-[11px] text-gray-500 uppercase tracking-wide font-medium">Team QA Avg</p>
-                  <p className={`text-4xl font-black ${Number(teamStats.qaAvg) >= 4 ? 'text-green-700' : Number(teamStats.qaAvg) >= 3 ? 'text-yellow-700' : 'text-red-700'}`}>{teamStats.qaAvg}/6</p>
-                  <p className="text-[10px] text-gray-400">Q2 team rate: {teamStats.q2Avg}%</p>
-                </div>
-                <div className={`rounded-xl border p-4 ${teamStats.criticalCount === 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
-                  <p className="text-[11px] text-gray-500 uppercase tracking-wide font-medium">Critical</p>
-                  <p className={`text-2xl font-bold ${teamStats.criticalCount > 0 ? 'text-red-700' : 'text-green-700'}`}>{teamStats.criticalCount}</p>
-                  <p className="text-[10px] text-gray-400">need intervention</p>
-                </div>
-                <div className={`rounded-xl border p-4 ${teamStats.totalCompliance === 0 ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
-                  <p className="text-[11px] text-gray-500 uppercase tracking-wide font-medium">Compliance</p>
-                  <p className={`text-2xl font-bold ${teamStats.totalCompliance === 0 ? 'text-green-700' : 'text-red-700'}`}>{teamStats.totalCompliance}</p>
-                  <p className="text-[10px] text-gray-400">violations today</p>
-                </div>
-                <div className={`rounded-xl border p-4 ${Number(teamStats.avgCoverage) >= 70 ? 'bg-green-50 border-green-200' : Number(teamStats.avgCoverage) >= 50 ? 'bg-yellow-50 border-yellow-200' : 'bg-red-50 border-red-200'}`}>
-                  <p className="text-[11px] text-gray-500 uppercase tracking-wide font-medium">QA Coverage</p>
-                  <p className={`text-2xl font-bold ${Number(teamStats.avgCoverage) >= 70 ? 'text-green-700' : Number(teamStats.avgCoverage) >= 50 ? 'text-yellow-700' : 'text-red-700'}`}>{teamStats.avgCoverage}%</p>
-                  <p className="text-[10px] text-gray-400">target 70%+</p>
-                </div>
-                <div className={`rounded-xl border p-4 ${teamStats.improvingCount >= (data || []).length / 2 ? 'bg-green-50 border-green-200' : 'bg-yellow-50 border-yellow-200'}`}>
-                  <p className="text-[11px] text-gray-500 uppercase tracking-wide font-medium">Improving</p>
-                  <p className={`text-2xl font-bold ${teamStats.improvingCount >= (data || []).length / 2 ? 'text-green-700' : 'text-yellow-700'}`}>{teamStats.improvingCount}/{(data || []).length}</p>
-                  <p className="text-[10px] text-gray-400">trending up</p>
-                </div>
-              </div>
-            </div>
-          )}
+      {/* ── PERIOD MODE ── */}
+      {activePeriod !== 'today' && !localLoading && (
+        periodAgents.length === 0 ? (
+          <div className="text-center py-16 text-gray-400">
+            <p className="text-lg">No call data for {PERIOD_OPTS[activePeriod]}</p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {periodAgents.map(agent => (
+              <PeriodAgentCard key={agent.name} agent={agent}
+                expanded={expandedAgent === agent.name}
+                onToggle={() => setExpandedAgent(expandedAgent === agent.name ? null : agent.name)}
+                cbStats={cbStats} />
+            ))}
+          </div>
+        )
+      )}
+    </div>
+  );
+}
 
-          <h2 style={{ fontWeight: 700, fontSize: 18, marginBottom: 16 }}>
-            {isAgent ? 'My Performance' : 'Agent Review'}
-          </h2>
+// ── TODAY Agent Card (from coaching snapshot) ──
+function TodayAgentCard({ agent, expanded, onToggle, cbStats, wcRecords, utilRecords }) {
+  const f = agent;
+  const name = f['Agent Name'] || '';
+  const alert = f['Alert Level'] || 'OK';
+  const alertColor = { CRITICAL: R, WARNING: A, WATCH: '#ea580c', OK: G }[alert] || GRAY;
+  const dept = detectDept(name, wcRecords, utilRecords);
+  const agentCb = cbStats?.byAgent?.[name];
 
-          <BiggestMovesPanel userRole={role} />
+  // QA bars
+  const qData = [];
+  for (let i = 1; i <= 6; i++) {
+    const val = f[`Q${i} Pass %`] || f[`Q${i}`] || 0;
+    qData.push({ q: `Q${i}`, val: typeof val === 'number' ? val : 0 });
+  }
 
-          {/* Special call types */}
-          {!isAgent && (() => {
-            const d = data || [];
-            const totalDisputed = d.reduce((s, a) => s + (a['Disputed Calls'] || 0), 0);
-            const totalCSP      = d.reduce((s, a) => s + (a['CSP Calls'] || 0), 0);
-            const totalLB       = d.reduce((s, a) => s + (a['Language Barrier Calls'] || 0), 0);
-            if (!totalDisputed && !totalCSP && !totalLB) return null;
-            return (
-              <div style={{ background: '#FFF7ED', border: '1px solid #FED7AA', borderRadius: 6,
-                padding: '10px 14px', marginBottom: 16 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: '#9A3412',
-                  textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 8 }}>
-                  🔍 Special Call Types Today
+  // Radar
+  const radarData = dept === 'wc'
+    ? [
+        { axis: 'Connection', val: f['Connection Rate'] || 0 },
+        { axis: 'Pitch', val: f['Pitch Completion'] || 0 },
+        { axis: 'QA', val: f['QA Score'] ? (f['QA Score'] / 6) * 100 : 0 },
+        { axis: 'Activation', val: f['Activation Rate'] || 0 },
+        { axis: 'DNP 6+', val: f['DNP Persistence'] || 0 },
+        { axis: 'CB Honor', val: agentCb ? agentCb.rate * 100 : 0 },
+      ]
+    : [
+        { axis: 'Connection', val: f['Connection Rate'] || 0 },
+        { axis: 'Engagement', val: f['Engagement Rate'] || 0 },
+        { axis: 'Sentiment', val: Math.max(0, ((f['Sentiment Delta'] || 0) + 1) * 50) },
+        { axis: 'DNP 6+', val: f['DNP Persistence'] || 0 },
+        { axis: 'CB Honor', val: agentCb ? agentCb.rate * 100 : 0 },
+        { axis: 'Calls', val: Math.min(100, (f['Connected Calls'] || 0) * 5) },
+      ];
+
+  const brief = f['Coaching Brief'] || f['Brief'] || f['Coaching Notes'] || '';
+
+  return (
+    <div className="bg-white rounded-xl border overflow-hidden">
+      <div className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50" onClick={onToggle}>
+        <div className="w-2 h-8 rounded-full" style={{ backgroundColor: alertColor }} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-sm">{name}</span>
+            <DeptBadge dept={dept} />
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full font-bold text-white" style={{ backgroundColor: alertColor }}>{alert}</span>
+          </div>
+          <div className="text-xs text-gray-500 mt-0.5">
+            {f['Connected Calls'] || 0} calls · QA {f['QA Score'] || '—'}/6 · {f['Trend'] || '—'}
+          </div>
+        </div>
+        {agentCb && <div className="text-right text-xs"><div className={`font-bold ${callbackHonorColor(agentCb.rate)}`}>{Math.round(agentCb.rate * 100)}%</div><div className="text-gray-400">CB Honor</div></div>}
+        <span className="text-gray-400">{expanded ? '▾' : '▸'}</span>
+      </div>
+
+      {expanded && (
+        <div className="px-4 pb-4 space-y-4 border-t pt-3">
+          <div className="grid md:grid-cols-2 gap-4">
+            {/* QA Bars */}
+            <div>
+              <div className="text-[10px] font-bold text-gray-500 uppercase mb-2">QA Checkpoints</div>
+              {qData.map(q => (
+                <div key={q.q} className="flex items-center gap-2 mb-1">
+                  <span className="text-[10px] w-8 text-gray-500">{q.q}</span>
+                  <div className="flex-1 bg-gray-100 rounded-full h-3">
+                    <div className="h-full rounded-full" style={{ width: `${q.val}%`, backgroundColor: tl(q.val, 70, 40) }} />
+                  </div>
+                  <span className="text-[10px] w-8 text-right font-bold" style={{ color: tl(q.val, 70, 40) }}>{q.val}%</span>
                 </div>
-                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 12 }}>
-                  {totalDisputed > 0 && <span style={{ color: '#B91C1C' }}><strong>{totalDisputed}</strong> Disputed</span>}
-                  {totalCSP > 0 && <span style={{ color: '#7C3AED' }}><strong>{totalCSP}</strong> Agent/CSP</span>}
-                  {totalLB > 0 && <span style={{ color: '#0F766E' }}><strong>{totalLB}</strong> Language Barrier</span>}
-                </div>
-              </div>
-            );
-          })()}
-
-          {visibleData.length === 0 ? (
-            <div style={{ padding: 40, textAlign: 'center', color: '#9CA3AF' }}>
-              {isAgent
-                ? 'No coaching data for you today. Populates after first scrape cycle.'
-                : 'No coaching data today. Populates after first scrape cycle.'}
-            </div>
-          ) : (
-            <>
-              {sortedToday.map(record => (
-                <AgentCard
-                  key={record.id || record['Agent Name']}
-                  record={record}
-                  isAgent={isAgent}
-                  dept={agentDeptMap[record['Agent Name']]}
-                  wcRecords={wcRecords}
-                  utilRecords={utilRecords}
-                  cbHonorStats={cbHonorStats}
-                  periodRecords={periodRecords}
-                />
               ))}
+            </div>
 
-              {/* Team summary bar */}
-              {!isAgent && teamStats && (
-                <div style={{ background: '#F3F4F6', borderRadius: 6, padding: '10px 14px',
-                  fontSize: 12, color: '#6B7280', marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-                  <span>Team Avg: <strong>{teamStats.qaAvg}/6</strong></span>
-                  <span>Q2 Rate: <strong>{teamStats.q2Avg}%</strong></span>
-                  <span>Compliance: <strong>{teamStats.totalCompliance}</strong></span>
-                  <span>QA Coverage: <strong>{teamStats.avgCoverage}%</strong>{Number(teamStats.avgCoverage) < 50 ? ' ⚠️' : ''}</span>
-                  <span>Improving: <strong>{teamStats.improvingCount}</strong></span>
-                  <span>Critical: <strong style={{ color: teamStats.criticalCount > 0 ? '#DC2626' : 'inherit' }}>{teamStats.criticalCount}</strong></span>
-                  {Number(teamStats.q2Avg) < 30 && (
-                    <span style={{ color: '#D97706' }}>⚠️ Q2 failure team-wide — check script/training</span>
-                  )}
-                </div>
-              )}
-            </>
+            {/* Radar */}
+            <div>
+              <div className="text-[10px] font-bold text-gray-500 uppercase mb-2">Performance Radar</div>
+              <ResponsiveContainer width="100%" height={180}>
+                <RadarChart data={radarData}>
+                  <PolarGrid />
+                  <PolarAngleAxis dataKey="axis" tick={{ fontSize: 9 }} />
+                  <Radar dataKey="val" stroke={dept === 'wc' ? B : TEAL} fill={dept === 'wc' ? B : TEAL} fillOpacity={0.2} />
+                  <ReTooltip />
+                </RadarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          {brief && (
+            <div className="bg-blue-50 rounded-lg p-3">
+              <div className="text-[10px] font-bold text-blue-800 uppercase mb-1">Coaching Brief</div>
+              <p className="text-sm text-blue-900 whitespace-pre-wrap">{brief}</p>
+            </div>
           )}
-        </>
+        </div>
       )}
+    </div>
+  );
+}
 
-      {/* ══════════ WoW / MoM mode ══════════ */}
-      {activePeriod !== 'today' && (
-        <>
-          <h2 style={{ fontWeight: 700, fontSize: 18, marginBottom: 4 }}>
-            {isAgent ? 'My Performance' : 'Agent Performance'} — {PERIOD_LABELS[activePeriod]}
-          </h2>
-          {(() => {
-            const { start, end } = getPeriodDates(activePeriod === 'month' ? 'mtd' : 'week');
-            return (
-              <p style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 16 }}>
-                {start} – {end}&nbsp;·&nbsp;
-                {localLoading ? 'Loading…' : `${effectivePR.length} calls across ${visiblePeriodStats.length} agent${visiblePeriodStats.length !== 1 ? 's' : ''}`}
-              </p>
-            );
-          })()}
+// ── PERIOD Agent Card (from raw records) ──
+function PeriodAgentCard({ agent, expanded, onToggle, cbStats }) {
+  const { name, dept, total, connected, activated, talkSec, qaEligible, qaPassed, qCounts, pitchDone, engaged } = agent;
+  const agentCb = cbStats?.byAgent?.[name];
 
-          {/* Period team summary strip */}
-          {!isAgent && visiblePeriodStats.length > 0 && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 20 }}>
-              <Kpi label="Total Agents" value={visiblePeriodStats.length} />
-              <Kpi label="Total Calls"
-                value={visiblePeriodStats.reduce((s, st) => s + st.total, 0)} />
-              <Kpi label="Avg Connection"
-                value={`${Math.round(visiblePeriodStats.reduce((s, st) => s + st.connectionRate, 0) / visiblePeriodStats.length)}%`}
-                color="#1D4ED8" />
-              <Kpi label="Avg Callback Honor"
-                value={(() => {
-                  const with_cb = visiblePeriodStats.filter(s => s.cbStats);
-                  return with_cb.length === 0 ? '—'
-                    : `${Math.round(with_cb.reduce((s, st) => s + st.cbStats.rate * 100, 0) / with_cb.length)}%`;
-                })()}
-                color="#0F766E" />
+  const radarData = dept === 'wc'
+    ? [
+        { axis: 'Connection', val: pct(connected, total) },
+        { axis: 'Pitch', val: pct(pitchDone, connected) },
+        { axis: 'QA', val: pct(qaPassed, qaEligible) },
+        { axis: 'Activation', val: pct(activated, total) },
+        { axis: 'CB Honor', val: agentCb ? agentCb.rate * 100 : 0 },
+      ]
+    : [
+        { axis: 'Connection', val: pct(connected, total) },
+        { axis: 'Engagement', val: pct(engaged, total) },
+        { axis: 'CB Honor', val: agentCb ? agentCb.rate * 100 : 0 },
+        { axis: 'Calls', val: Math.min(100, total * 3) },
+      ];
+
+  return (
+    <div className="bg-white rounded-xl border overflow-hidden">
+      <div className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50" onClick={onToggle}>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="font-semibold text-sm">{name}</span>
+            <DeptBadge dept={dept} />
+          </div>
+          <div className="text-xs text-gray-500 mt-0.5">
+            {total} calls · {connected} connected · {fmtTalkTime(talkSec)}
+          </div>
+        </div>
+        <div className="flex gap-4 text-xs text-right">
+          {dept === 'wc' && <div><div className="font-bold" style={{ color: tl(pct(activated, total), 8, 5) }}>{pct(activated, total)}%</div><div className="text-gray-400">Act</div></div>}
+          {dept === 'util' && <div><div className="font-bold" style={{ color: tl(pct(engaged, total), 40, 25) }}>{pct(engaged, total)}%</div><div className="text-gray-400">Eng</div></div>}
+          {agentCb && <div><div className={`font-bold ${callbackHonorColor(agentCb.rate)}`}>{Math.round(agentCb.rate * 100)}%</div><div className="text-gray-400">CB</div></div>}
+        </div>
+        <span className="text-gray-400">{expanded ? '▾' : '▸'}</span>
+      </div>
+
+      {expanded && (
+        <div className="px-4 pb-4 border-t pt-3">
+          <div className="grid md:grid-cols-2 gap-4">
+            {/* KPI Grid */}
+            <div className="grid grid-cols-2 gap-2">
+              <MiniKpi label="Connection" value={`${pct(connected, total)}%`} color={tl(pct(connected, total), 50, 30)} />
+              {dept === 'wc' && <MiniKpi label="Activation" value={`${pct(activated, total)}%`} color={tl(pct(activated, total), 8, 5)} />}
+              {dept === 'wc' && <MiniKpi label="Pitch ≥80%" value={`${pct(pitchDone, connected)}%`} color={tl(pct(pitchDone, connected), 75, 55)} />}
+              {dept === 'wc' && <MiniKpi label="QA Pass" value={`${pct(qaPassed, qaEligible)}%`} color={tl(pct(qaPassed, qaEligible), 60, 30)} />}
+              {dept === 'util' && <MiniKpi label="Engagement" value={`${pct(engaged, total)}%`} color={tl(pct(engaged, total), 40, 25)} />}
+              <MiniKpi label="CB Honor" value={agentCb ? `${Math.round(agentCb.rate * 100)}%` : '—'} color={agentCb ? tl(agentCb.rate * 100, 85, 60) : GRAY} />
+              <MiniKpi label="Talk Time" value={fmtTalkTime(talkSec)} />
+            </div>
+
+            {/* Radar */}
+            <ResponsiveContainer width="100%" height={180}>
+              <RadarChart data={radarData}>
+                <PolarGrid />
+                <PolarAngleAxis dataKey="axis" tick={{ fontSize: 9 }} />
+                <Radar dataKey="val" stroke={dept === 'wc' ? B : TEAL} fill={dept === 'wc' ? B : TEAL} fillOpacity={0.2} />
+                <ReTooltip />
+              </RadarChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Q Bars for WC */}
+          {dept === 'wc' && qaEligible > 0 && (
+            <div className="mt-3">
+              <div className="text-[10px] font-bold text-gray-500 uppercase mb-1">QA Checkpoints</div>
+              <div className="grid grid-cols-6 gap-1">
+                {qCounts.map((c, i) => {
+                  const r = pct(c, qaEligible);
+                  return (
+                    <div key={i} className="text-center">
+                      <div className="text-[10px] text-gray-400">Q{i+1}</div>
+                      <div className="mx-auto w-6 bg-gray-100 rounded-full h-16 relative overflow-hidden">
+                        <div className="absolute bottom-0 w-full rounded-full" style={{ height: `${r}%`, backgroundColor: tl(r, 70, 40) }} />
+                      </div>
+                      <div className="text-[10px] font-bold" style={{ color: tl(r, 70, 40) }}>{r}%</div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
-
-          {localLoading ? (
-            <div style={{ padding: 40, textAlign: 'center', color: '#9CA3AF' }}>
-              Loading call records…
-            </div>
-          ) : visiblePeriodStats.length === 0 ? (
-            <div style={{ padding: 40, textAlign: 'center', color: '#9CA3AF' }}>
-              No calls found for this period.
-            </div>
-          ) : (
-            visiblePeriodStats.map(stats => (
-              <PeriodAgentCard
-                key={stats.agentName}
-                stats={stats}
-                isAgent={isAgent}
-                period={activePeriod}
-              />
-            ))
-          )}
-        </>
+        </div>
       )}
+    </div>
+  );
+}
+
+function DeptBadge({ dept }) {
+  return dept === 'wc'
+    ? <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-medium">Welcome Call</span>
+    : <span className="text-[10px] px-1.5 py-0.5 rounded bg-teal-100 text-teal-700 font-medium">Utilization</span>;
+}
+
+function MiniKpi({ label, value, color }) {
+  return (
+    <div className="bg-gray-50 rounded-lg p-2">
+      <div className="text-[10px] text-gray-500">{label}</div>
+      <div className="text-lg font-bold" style={{ color: color || '#111' }}>{value}</div>
     </div>
   );
 }
